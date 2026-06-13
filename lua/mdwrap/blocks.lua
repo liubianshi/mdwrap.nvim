@@ -288,9 +288,21 @@ local function walk(node, get_line, out)
   end
 end
 
---- 切分缓冲区为块列表。
+--- 共享核心：给定语法树根与按行取文本的闭包，产出排序后的块列表。
+---@param root TSNode
+---@param get_line fun(r: integer): string  -- r 为 0-indexed 行号
+---@return mdwrap.Block[]
+local function split_core(root, get_line)
+  ---@type mdwrap.Block[]
+  local out = {}
+  walk(root, get_line, out)
+  table.sort(out, function(a, b) return a.srow < b.srow end)
+  return out
+end
+
+--- 从 buffer 解析并切块（formatexpr / :MdwrapFormat / format_buffer 用）。
 ---@param bufnr integer
----@return mdwrap.Block[] blocks
+---@return mdwrap.Block[]
 function M.split(bufnr)
   local parser = vim.treesitter.get_parser(bufnr, "markdown")
   ---@diagnostic disable-next-line: need-check-nil  -- 已加载的 parser，其 parse() 必产出至少一棵树
@@ -299,11 +311,21 @@ function M.split(bufnr)
   local function get_line(r)
     return all_lines[r + 1] or ""
   end
-  ---@type mdwrap.Block[]
-  local out = {}
-  walk(root, get_line, out)
-  table.sort(out, function(a, b) return a.srow < b.srow end)
-  return out
+  return split_core(root, get_line)
+end
+
+--- 从内存 lines 解析并切块（conform 链式集成用：不依赖 buffer 树，避免前序 formatter
+--- 改过文本后 buffer 树相对 lines 失同步）。
+---@param lines string[]
+---@return mdwrap.Block[]
+function M.split_lines(lines)
+  local parser = vim.treesitter.get_string_parser(table.concat(lines, "\n"), "markdown")
+  ---@diagnostic disable-next-line: need-check-nil  -- 已加载的 parser，其 parse() 必产出至少一棵树
+  local root = parser:parse(true)[1]:root()
+  local function get_line(r)
+    return lines[r + 1] or ""
+  end
+  return split_core(root, get_line)
 end
 
 return M

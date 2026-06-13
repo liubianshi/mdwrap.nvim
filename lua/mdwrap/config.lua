@@ -15,6 +15,7 @@ function M.defaults()
     cjk_english_spacing = true,  -- 盘古之白 pass
     respect_conceallevel = true, -- conceallevel=0 的窗口不扣 conceal 宽度
     notify_on_error_node = true, -- 块含 ERROR 节点跳过时提示
+    set_formatexpr = true,       -- false 时不注册 formatexpr，把 gq 让回默认（交 conform 等接管）
   }
 end
 

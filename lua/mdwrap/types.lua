@@ -35,12 +35,15 @@
 ---@field cjk_english_spacing boolean
 ---@field respect_conceallevel boolean
 ---@field notify_on_error_node boolean
+---@field set_formatexpr boolean    -- false 时 plugin/mdwrap.lua 不注册 formatexpr（把 gq 让回默认，交 conform 等接管）
 
 ---@class (partial) mdwrap.Opts: mdwrap.Config   -- setup() 的用户覆盖表，全字段可选
 
----@class (partial) mdwrap.FormatOpts: mdwrap.Opts -- format_buffer 额外接受范围限定（(partial) 须沿继承链显式传递，否则父类字段被当作必填）
+---@class (partial) mdwrap.FormatOpts: mdwrap.Opts -- format_buffer / format_lines 额外接受范围限定（(partial) 须沿继承链显式传递，否则父类字段被当作必填）
 ---@field row_start? integer
 ---@field row_end? integer
+---@field bufnr? integer           -- format_lines 专用：仅用于取环境量（窗口 conceallevel / textwidth），不从中解析文本
+---@field range? table             -- format_lines 专用：conform.Range（(1,0) 索引），入口换算为 row_start/row_end
 
 ---@class mdwrap.LayoutOpts
 ---@field width? integer

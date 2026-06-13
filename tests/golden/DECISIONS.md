@@ -45,6 +45,36 @@
 - **延伸**：更完整的方案是 atoms 同时读取活动 conceal extmark（render-markdown 等注入的），
   v1 暂只内建处理 `$`;其余 conceal 仍以 highlights 查询为准。
 
+# 编辑器集成阶段的裁定（设计文档未覆盖处）
+
+以下一条不影响 golden 行为，是对设计文档 4.5／第 5 节编辑器集成面的补充裁定，
+源于「mdwrap 能否作为 conform.nvim 的 filter」这一问题的收敛。
+
+## 7. formatexpr 与 conform.nvim 共存，并提供 `set_formatexpr` 开关
+
+- **背景**：用户同时使用 [conform.nvim](https://github.com/stevearc/conform.nvim) 做格式化编排。
+  实测其 formatter 配置支持**进程内 Lua 形态**——`format = function(self, ctx, lines, callback)`,
+  与 `command` 互斥（见 `conform/runner.lua:340`、内置 `trim_whitespace`）;`ctx` 携带活 bufnr
+  `ctx.buf`、`ctx.range`、`ctx.shiftwidth`。故 mdwrap 可作为**一等 Lua formatter**接入,
+  而非退化为 stdin→stdout 的 CLI filter——后者拿不到 bufnr,会丢失 tree-sitter 树与窗口 conceal,
+  从根本上违背「视觉宽度唯一真相来自活 buffer conceal 元数据」的设计前提。
+- **用户裁定**：`formatexpr` 与 conform **共存**——`gq` 系列仍走 `formatexpr` 手动折行,
+  conform 负责 format-on-save／`:Format` 编排;同时**提供 `set_formatexpr`（默认 `true`）开关**,
+  置 `false` 时 `plugin/mdwrap.lua` 不再对 `markdown/quarto/pandoc/rmd` 注册 `formatexpr`,
+  把 `gq` 让回 Neovim 默认行为,由 conform 单独接管折行。
+- **作用点**：开关只控制 `plugin/mdwrap.lua` 的 FileType autocmd 是否设置
+  `formatexpr=v:lua.require'mdwrap'.formatexpr()`（设计文档:275）;`:MdwrapFormat`、
+  `format_buffer`、`format_lines` 一概不受影响。
+- **新增公开 API**：`require('mdwrap').format_lines(lines, opts) -> string[]`,
+  lines 进 / lines 出,`opts` 含 `bufnr`（取环境量,如窗口 `conceallevel`）与 `range`。
+  `format_buffer` 复用同一核心(读 buffer 行 → `format_lines` → 回写),纯函数层不受影响。
+- **链式调用坑**：conform 串多个 formatter 时在内存里逐棒传递 `lines`,**中途不回写 buffer**,
+  故当 mdwrap 排在别的 markdown formatter 之后时,`ctx.buf` 的 tree-sitter 树相对 `lines` 是**旧的**。
+  裁定：`format_lines` 内部优先用
+  `vim.treesitter.get_string_parser(table.concat(lines,'\n'),'markdown')` 从 `lines` 现解析,
+  `ctx.buf` 仅用于读窗口 `conceallevel` 等环境量,使链式与否都正确。
+- 接入示例见 README「与 conform.nvim 集成」一节。
+
 # 类型系统阶段的工具裁定（偏离类型系统建设计划处）
 
 以下两条不影响 golden 行为，而是「为 mdwrap.nvim 建立 LuaLS 规范类型系统」一计划中、

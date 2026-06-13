@@ -55,6 +55,8 @@ use({ "your/mdwrap.nvim", config = function() require("mdwrap").setup({}) end })
   于是 `gqip`（格式化段落）、`gqq`、可视选区 `gq` 等都按本插件逻辑折行。
 - **`:MdwrapFormat`**：格式化整个 buffer；`:'<,'>MdwrapFormat` 格式化选区。
 - **脚本／批处理**：`require("mdwrap").format_buffer(bufnr, opts)`。
+- **lines 进／出**：`require("mdwrap").format_lines(lines, opts)`——接收并返回 `string[]`，
+  `opts` 含 `bufnr`（取窗口 `conceallevel` 等环境量）与 `range`；供 conform.nvim 等格式化编排器调用。
 
 折行宽度取值顺序：显式配置 `width` ＞ buffer 的 `textwidth`（非 0）＞ 默认 80。
 
@@ -69,8 +71,44 @@ require("mdwrap").setup({
   cjk_english_spacing = true,   -- 盘古之白：CJK↔拉丁/数字、CJK↔行内代码 之间插空格
   respect_conceallevel = true,  -- conceallevel=0 的窗口不扣 conceal 宽度
   notify_on_error_node = true,  -- 块含 ERROR 节点（畸形）跳过时提示
+  set_formatexpr = true,        -- false 时不对上述 filetype 注册 formatexpr，把 gq 让回默认（交由 conform 等接管）
 })
 ```
+
+## 与 conform.nvim 集成
+
+[conform.nvim](https://github.com/stevearc/conform.nvim) 的 formatter 支持**进程内 Lua 形态**
+（`format = function(self, ctx, lines, callback)`，与外部 `command` 互斥），且 `ctx` 携带活 bufnr。
+因此 mdwrap 可作为**一等 Lua formatter**接入——不经 stdin／stdout 外部进程，直接在编辑器内拿到
+tree-sitter 树与窗口 conceal，conceal 感知折行的能力完整保留：
+
+```lua
+require("conform").setup({
+  formatters = {
+    mdwrap = {
+      format = function(self, ctx, lines, callback)
+        local ok, out = pcall(require("mdwrap").format_lines, lines, {
+          bufnr = ctx.buf,    -- 取窗口 conceallevel 等环境量
+          range = ctx.range,  -- conform 选区 → mdwrap 块范围
+        })
+        if ok then callback(nil, out) else callback(tostring(out)) end
+      end,
+    },
+  },
+  formatters_by_ft = {
+    markdown = { "mdwrap" }, quarto = { "mdwrap" },
+    pandoc   = { "mdwrap" }, rmd    = { "mdwrap" },
+  },
+})
+```
+
+`formatexpr` 与 conform 可**共存**：`gq` 系列仍走 mdwrap 的 `formatexpr` 手动折行，conform 负责
+format-on-save／`:Format` 编排。若想让 conform 单独接管、把 `gq` 让回 Neovim 默认行为，
+设 `set_formatexpr = false`（见上方配置）。
+
+> 注意：conform 串接多个 formatter 时在内存里逐棒传递 `lines`，**中途不回写 buffer**。当 mdwrap
+> 排在别的 markdown formatter 之后时，`ctx.buf` 的 tree-sitter 树相对 `lines` 是旧的；mdwrap 内部因此
+> 优先从 `lines` 现解析，`ctx.buf` 仅用于读环境量，故无论是否链式都正确。
 
 ## 与 Perl 版 mdwrap CLI 选项对照
 
