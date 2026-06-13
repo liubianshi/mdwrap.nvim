@@ -104,3 +104,29 @@
   收窄 `and/or` 惯用法;两处 tree-sitter `parse()[1]` 的 `need-check-nil` 与 `minimal_init` 的
   `vim.cmd` 误报以行级 `---@diagnostic disable-next-line` 静默。
 
+# 折行行为扩展（偏离设计文档「v1 只实现 zh」处）
+
+以下一条扩展了断句规则的语言覆盖。设计文档 2.3／3.5（第 37 行）把英文句末规则集列为
+`lang=en`、**推迟到 v2**;经用户裁定提前在 v1 落地,且不走 `lang` 门控。验收以
+`27-en-sentence-preferred`／`28-en-abbreviation`／`29-en-colon`（均 width=40）为准。
+
+## 8. 英文语义断行：半角终止符并入分隔符集 + 缩写保护，语言无关
+
+- **背景**：设计 v1 的 `sentence_sep`/`clause_sep` 只收全角标点,英文段在 `wrap_sentence=false`
+  下走不到句末偏好分支 → 退化为「断在最后一个能塞下的空格」,违反用户全局 Markdown 规则第 3 条
+  「never wrap at the nearest space」。REF 的 zh 句末正则本含半角 `,.;:!?`,但被
+  `_sentence_end` 的「行尾 30 字符全 ASCII 即不算句末」启发式压制——那是为「中文为主、偶夹英文」
+  设计的,对英文为主的段落方向相反。
+- **用户裁定（两问收敛）**：
+  1. **始终生效、语言无关**——半角 `. : ; ! ?` 并入 `sentence_sep`、半角 `,` 与顿号 `、`
+     并入 `clause_sep`,与全角并列;**丢弃** REF 的 30-字符-ASCII 启发式。中英混排同段落里
+     英文 `.`/`:` 也成为合法断点。顿号 `、` 此前连中文都漏收,一并补上。
+  2. **现在就加缩写保护**——`chardata.is_abbrev(token)`:token 以半角 `.` 结尾且去尾点小写后
+     命中缩写表（`mr/dr/e.g/etc/u.s/...`,约 80 项）、或为**单个 ASCII 字母**（首字母缩写 `A.`/`U.`）
+     时,`layout.level_of` 把该断点降级为 `normal`,避免 `Dr. Smith`/`e.g. foo` 被误断。
+     代价:真句末若恰好撞上 `etc.` 会少断一处——语义断行通行取舍,优于句中每个缩写都误断。
+- **作用点**：纯数据/纯逻辑——`chardata.lua`（两张分隔符表 + `abbreviations`/`is_abbrev`）与
+  `layout.lua` 的 `level_of`（唯一逻辑改动:`.` 触发时查 `is_abbrev`）。短行容忍度
+  `min(60,w-20)`/`min(12,w-20)` 不变,英文自动复用既有「句末/子句优先 + 短行容忍」机制。
+- **零回归**：旧 26 个 golden 字节不变（含英文的用例未位移）,故未触碰任何既有 `expected`。
+

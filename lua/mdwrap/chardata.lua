@@ -73,12 +73,21 @@ M.sentence_sep = {
   [0xff1b] = true, -- ；
   [0xff01] = true, -- ！
   [0xff1f] = true, -- ？
+  -- 半角终止符（语言无关：英文句末/子句末优先断行，与全角并列）。
+  -- `.` 触发时另走缩写保护（见 is_abbrev），避免 Dr./e.g. 误判。
+  [0x2e] = true, -- .
+  [0x3a] = true, -- :
+  [0x3b] = true, -- ;
+  [0x21] = true, -- !
+  [0x3f] = true, -- ?
 }
 
 -- 次级（子句）分隔符集（触发 clause 级断行偏好）
 ---@type table<integer, boolean>
 M.clause_sep = {
   [0xff0c] = true, -- ，
+  [0x3001] = true, -- 、 顿号（此前漏收；用户规则 tier-2 明确含它）
+  [0x2c]   = true, -- , 半角逗号（英文子句末，最后手段）
 }
 
 -- 半角「禁止其后断行」字符：' " (
@@ -90,6 +99,49 @@ M.half_break_before = {
   [","] = true, ["."] = true, ["!"] = true, [";"] = true, [":"] = true,
   ["?"] = true, ["]"] = true, [")"] = true, ["}"] = true,
 }
+
+-- 英文缩写集（小写、去尾点形式）：token 以半角 `.` 结尾时查此表，命中则**不**算句末，
+-- 避免 Dr./e.g./U.S. 等被误判为句子边界。`is_abbrev` 另把「单个 ASCII 字母」（首字母
+-- 缩写 A./U.）也视作缩写。集合刻意小而常见——真句末若恰好撞上 etc.，宁可少断一处，也好过
+-- 把句中每个缩写都误断（语义断行通行取舍）。
+---@type table<string, boolean>
+M.abbreviations = {}
+do
+  local list = {
+    -- 称谓 / 头衔
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "rev", "hon",
+    "gen", "col", "capt", "lt", "sgt", "gov", "sen", "rep", "pres",
+    -- 拉丁 / 学术
+    "e.g", "i.e", "etc", "et", "al", "viz", "cf", "vs", "ibid", "op",
+    "cit", "ca", "n.b", "q.v",
+    -- 引用 / 计量
+    "no", "nos", "fig", "figs", "eq", "vol", "vols", "ch", "chap",
+    "sec", "p", "pp", "par", "ed", "eds", "trans", "approx", "max",
+    "min", "std", "avg",
+    -- 机构 / 商业
+    "inc", "ltd", "co", "corp", "dept", "est", "mfg", "bros",
+    -- 月份
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept",
+    "oct", "nov", "dec",
+    -- 时间 / 地名 / 学位
+    "a.m", "p.m", "u.s", "u.k", "u.s.a", "d.c", "ph.d", "b.a", "m.a",
+    "m.d", "b.c", "a.d",
+  }
+  for _, w in ipairs(list) do M.abbreviations[w] = true end
+end
+
+--- token 是否为英文缩写（句末 `.` 的抑制判定）。剥掉尾部 ASCII 标点、小写化后查表；
+--- 单个 ASCII 字母（首字母缩写 A./U.）也判为缩写。纯字节操作，不涉多字节字符。
+---@param token string
+---@return boolean
+function M.is_abbrev(token)
+  -- 仅剥尾部半角标点（缩写后不会跟多字节闭合括号）
+  local core = (token:gsub("[%.,;:!%?%)%]}\"']+$", "")):lower()
+  if core == "" then return false end
+  if M.abbreviations[core] then return true end
+  if #core == 1 and core:match("%a") then return true end
+  return false
+end
 
 -- ----------------------------------------------------------------------------
 -- UTF-8 工具（纯 Lua，无 vim、无 lua5.3 utf8 库依赖）

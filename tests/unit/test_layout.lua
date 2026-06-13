@@ -122,6 +122,16 @@ check("24 wrap-sentence", wrap("今天天气晴朗适合出门。我们一起去
   { "今天天气晴朗适合出门。我们一起", "去附近的公园散步聊天。" })
 
 -- ============================================================
+-- 27–29 英文语义断行（width=40，半角终止符触发句末/子句偏好；缩写保护）
+-- ============================================================
+check("27 en-sentence-preferred", wrap("The cat sat on the mat. The dog ran in the park quickly.", { width = 40 }),
+  { "The cat sat on the mat.", "The dog ran in the park quickly." })
+check("28 en-abbreviation", wrap("See Dr. Smith and Mr. Jones at the office today please now.", { width = 40 }),
+  { "See Dr. Smith and Mr. Jones at the", "office today please now." })
+check("29 en-colon", wrap("Please note the following: all lines must wrap at punctuation marks correctly.", { width = 40 }),
+  { "Please note the following:", "all lines must wrap at punctuation marks", "correctly." })
+
+-- ============================================================
 -- 22 rewrap-merge（width=30，合并后重折；中文无空格 / 英文一空格）
 -- ============================================================
 check("22 rewrap cjk", wrap(layout.merge_lines({ "这是第一行中文内容", "这是第二行中文内容" }), { width = 30 }),

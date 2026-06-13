@@ -227,8 +227,14 @@ function M.wrap(atoms, opts)
   end
 
   local function level_of(t)
-    local cp = utf8_cp(last_char(tokens[t].text))
-    if cp and chardata.sentence_sep[cp] then return "sentence" end
+    local txt = tokens[t].text
+    local lc = last_char(txt)
+    local cp = utf8_cp(lc)
+    if cp and chardata.sentence_sep[cp] then
+      -- 半角句号触发时走缩写保护：Dr./e.g./单字母首字母缩写不算句末
+      if lc == "." and chardata.is_abbrev(txt) then return "normal" end
+      return "sentence"
+    end
     if cp and chardata.clause_sep[cp] then return "clause" end
     return "normal"
   end
