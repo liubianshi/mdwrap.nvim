@@ -11,9 +11,11 @@ local layout = require("mdwrap.layout")
 
 local M = {}
 
+---@type mdwrap.Config
 M.options = config.defaults()
 
 --- 合并用户配置。
+---@param opts mdwrap.Opts?
 function M.setup(opts)
   M.options = vim.tbl_extend("force", config.defaults(), opts or {})
 end
@@ -39,6 +41,11 @@ local function conceal_enabled(opts, bufnr)
 end
 
 --- 处理一个 wrap 块，返回新的行列表。
+---@param b mdwrap.Block
+---@param opts mdwrap.Config
+---@param width integer
+---@param conceal boolean
+---@return string[]
 local function process_wrap(b, opts, width, conceal)
   local width_fn = vim.fn.strdisplaywidth
   if opts.keep_origin_wrap then
@@ -69,9 +76,10 @@ end
 
 --- 格式化缓冲区（headless / 命令 / formatexpr 共用）。
 ---@param bufnr integer|nil 0 或 nil 表示当前缓冲区
----@param opts table|nil 覆盖配置；可含 row_start/row_end（0-indexed，闭区间）限定范围
+---@param opts mdwrap.FormatOpts? 覆盖配置；可含 row_start/row_end（0-indexed，闭区间）限定范围
 function M.format_buffer(bufnr, opts)
   bufnr = (bufnr == nil or bufnr == 0) and vim.api.nvim_get_current_buf() or bufnr
+  ---@cast bufnr integer
   opts = vim.tbl_extend("force", M.options, opts or {})
   local bs = blocks.split(bufnr)
   local width = resolve_width(opts, bufnr)

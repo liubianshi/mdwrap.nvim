@@ -137,8 +137,8 @@ end
 
 --- 把一条逻辑行字符串原子化。
 ---@param str string 单逻辑行（无换行）
----@param opts table { width_fn:fun(string):integer, conceal:boolean }
----@return table[] atoms
+---@param opts mdwrap.AtomizeOpts?
+---@return mdwrap.Atom[] atoms
 function M.atomize(str, opts)
   opts = opts or {}
   local width_fn = opts.width_fn or vim.fn.strdisplaywidth
@@ -146,6 +146,7 @@ function M.atomize(str, opts)
 
   local parser = vim.treesitter.get_string_parser(str, "markdown_inline")
   local trees = parser:parse(true)
+  ---@diagnostic disable-next-line: need-check-nil  -- 已加载的 parser，其 parse() 必产出至少一棵树
   local root = trees[1]:root()
 
   local atomic = {}
@@ -157,6 +158,7 @@ function M.atomize(str, opts)
 
   local conceal = conceal_on and collect_conceal(root, str) or {}
 
+  ---@type mdwrap.Atom[]
   local atoms = {}
   local pending = "" -- 待并入下一可见原子的 conceal 标记文本
   local word = nil   -- 累积中的 word 原子文本

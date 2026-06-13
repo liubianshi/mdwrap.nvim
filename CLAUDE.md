@@ -85,10 +85,20 @@ recompute East Asian width yourself. See design doc 4.2.1.
 ## Test commands (will exist once implemented)
 
 ```bash
-tests/run_unit.sh     # Pure-Lua unit tests (busted if available, else minimal asserts); covers layout/spacing/chardata
-tests/run_golden.sh   # nvim --headless driver, byte-exact diff input -> expected
-luacheck lua/         # Must be warning-free when available
+tests/run_unit.sh      # Pure-Lua unit tests (busted if available, else minimal asserts); covers layout/spacing/chardata
+tests/run_golden.sh    # nvim --headless driver, byte-exact diff input -> expected
+tests/run_typecheck.sh # lua-language-server --check (domain types, Lua 5.1) + pure-module no-vim smoke
+luacheck lua/          # Must be warning-free when available
 ```
+
+Type annotations are LuaCATS; all domain types (`mdwrap.Atom`, `mdwrap.Block`, `mdwrap.Config`,
+`mdwrap.WidthFn`, the various `*Opts`) live in `lua/mdwrap/types.lua`, a meta file that is **never
+`require`d at runtime** — LuaLS resolves `---@class` by name across the workspace, so the pure modules
+reference these types in comments only and the no-`require`-`vim` constraint stays intact. `.luarc.json`
+pins `runtime.version: "Lua 5.1"` (machine guard for the three pure modules) and silences `vim` via
+`diagnostics.globals`; `run_typecheck.sh` injects the real `$VIMRUNTIME` so `vim.*` / `TSNode` resolve
+during the check, and folds in the `luajit` no-vim smoke as a second guard. In the editor, install
+[lazydev.nvim](https://github.com/folke/lazydev.nvim) for full `vim` / tree-sitter types.
 
 Run a single golden case:
 ```bash

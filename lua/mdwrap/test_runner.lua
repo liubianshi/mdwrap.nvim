@@ -49,6 +49,8 @@ local function pandoc_semantic(input, output)
 end
 
 --- 运行单个用例目录。返回 { name, pass, idem, semantic, detail }。
+---@param case_dir string
+---@return mdwrap.GoldenResult
 function M.run(case_dir)
   local name = case_dir:gsub(".*/", "")
   local input = read(case_dir .. "/input.md")

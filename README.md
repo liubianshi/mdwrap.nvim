@@ -96,11 +96,22 @@ require("mdwrap").setup({
 `layout.lua`／`spacing.lua`／`chardata.lua` 可在无 Neovim 的纯 Lua（luajit／lua5.1）下加载与测试；
 布局层通过 `width_fn` 参数接收宽度函数（生产注入 `strdisplaywidth` + conceal，测试注入查表 stub）。
 
+### 类型系统
+
+全部领域类型（`mdwrap.Atom`／`mdwrap.Block`／`mdwrap.Config`／`mdwrap.WidthFn` 与各 `*Opts`）以
+LuaCATS 注解集中声明于 `lua/mdwrap/types.lua`——一个**运行时从不被 `require`** 的 meta 文件：
+lua-language-server 按名字在整个工作区解析 `---@class`，与 `require` 无关，因此纯模块只在注释里按名字
+引用这些类型，不破坏「禁止 `require` 任何 `vim.*`」的硬约束。仓库根的 `.luarc.json` 把
+`runtime.version` 钉为 `Lua 5.1`（对三纯模块的 5.2+ 用法机器化报警），并用 `diagnostics.globals`
+静默 `vim`。编辑器侧建议安装
+[lazydev.nvim](https://github.com/folke/lazydev.nvim) 以获得完整的 `vim`／tree-sitter 类型。
+
 ## 测试
 
 ```bash
-tests/run_unit.sh     # 纯 Lua 单元测试（layout/spacing/chardata），无需 Neovim
-tests/run_golden.sh   # nvim --headless 驱动，逐字节 diff input→expected + 三项不变量
+tests/run_unit.sh      # 纯 Lua 单元测试（layout/spacing/chardata），无需 Neovim
+tests/run_golden.sh    # nvim --headless 驱动，逐字节 diff input→expected + 三项不变量
+tests/run_typecheck.sh # lua-language-server --check 领域类型校验（注入真实 $VIMRUNTIME）+ 纯模块 no-vim 冒烟
 ```
 
 三项不变量对全部 golden 输入自动执行：①幂等 `format(format(x)) == format(x)`；

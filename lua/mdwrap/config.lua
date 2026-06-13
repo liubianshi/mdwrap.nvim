@@ -5,6 +5,7 @@
 local M = {}
 
 --- 返回一份默认配置（每次新建表，避免共享可变状态）。
+---@return mdwrap.Config
 function M.defaults()
   return {
     width = nil,                 -- nil 则取 textwidth，再退 80（REF: --line-width）

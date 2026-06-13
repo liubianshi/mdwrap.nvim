@@ -13,6 +13,7 @@
 local M = {}
 
 -- 禁止其后断行（其后不可换行）：左引号、左括号类，约 21 个码点
+---@type table<integer, boolean>
 M.forbit_break_after = {
   [0x2014] = true, -- —  Em dash
   [0x2018] = true, -- ‘  Left single quotation mark
@@ -38,6 +39,7 @@ M.forbit_break_after = {
 }
 
 -- 禁止其前断行（其前不可换行）：右引号、句读、右括号类，约 21 个码点
+---@type table<integer, boolean>
 M.forbit_break_before = {
   [0x2014] = true, -- —  Em dash
   [0x2019] = true, -- ’  Right single quotation mark
@@ -63,6 +65,7 @@ M.forbit_break_before = {
 }
 
 -- 句级分隔符集（设计文档 4.3.4：触发 sentence 级断行偏好）
+---@type table<integer, boolean>
 M.sentence_sep = {
   [0x3002] = true, -- 。
   [0xff1a] = true, -- ：
@@ -73,13 +76,16 @@ M.sentence_sep = {
 }
 
 -- 次级（子句）分隔符集（触发 clause 级断行偏好）
+---@type table<integer, boolean>
 M.clause_sep = {
   [0xff0c] = true, -- ，
 }
 
 -- 半角「禁止其后断行」字符：' " (
+---@type table<string, boolean>
 M.half_break_after = { ["'"] = true, ['"'] = true, ["("] = true }
 -- 半角「禁止其前断行」字符：, . ! ; : ? ] ) }
+---@type table<string, boolean>
 M.half_break_before = {
   [","] = true, ["."] = true, ["!"] = true, [";"] = true, [":"] = true,
   ["?"] = true, ["]"] = true, [")"] = true, ["}"] = true,
@@ -141,7 +147,7 @@ M.is_cjk = is_cjk
 
 --- 返回字符（Unicode 码点）的排版属性分类。
 ---@param u integer Unicode 码点
----@return string  分类标签
+---@return mdwrap.CharAttr  分类标签
 function M.char_attr(u)
   if M.forbit_break_after[u] then return "PUN_FORBIT_BREAK_AFTER" end
   if M.forbit_break_before[u] then return "PUN_FORBIT_BREAK_BEFORE" end

@@ -152,8 +152,8 @@ end
 -- ----------------------------------------------------------------------------
 
 --- 贪心折行。
----@param atoms table[] 原子数组
----@param opts table { width, prefix_first, prefix_rest, wrap_sentence, width_fn }
+---@param atoms mdwrap.Atom[] 原子数组
+---@param opts mdwrap.LayoutOpts
 ---@return string[] lines
 function M.wrap(atoms, opts)
   opts = opts or {}

@@ -72,6 +72,8 @@ local IGNORE_TYPES = {
 }
 
 --- 节点占用的行范围（0-indexed，闭区间 [sr, er]）。
+---@param node TSNode
+---@return integer sr, integer er
 local function rows_of(node)
   local sr, _, er, ec = node:range()
   if ec == 0 and er > sr then er = er - 1 end
@@ -79,6 +81,8 @@ local function rows_of(node)
 end
 
 --- 子树内是否含 ERROR / 缺失节点（畸形）。
+---@param node TSNode
+---@return boolean
 local function has_error(node)
   if node:type() == "ERROR" or node:missing() then return true end
   for child in node:iter_children() do
@@ -89,6 +93,9 @@ end
 
 --- 计算 paragraph 的前缀（引用标记 + 列表标记）。
 --- 返回 prefix_first（首行完整前缀）、prefix_rest（续行前缀：引用标记 + 列表标记等宽空格）。
+---@param para TSNode
+---@param get_line fun(r:integer):string
+---@return string prefix_first, string prefix_rest, string quote_part
 local function compute_prefix(para, get_line)
   local psr, psc = para:range()
   local first_line = get_line(psr)
@@ -133,7 +140,8 @@ local function strip_prefix(line, is_first, prefix_first, quote_part)
 end
 
 --- 判定一个顶层 paragraph 的特殊类型（数学块 / div 围栏 / shortcode）。
---- 返回 'math' | 'divfence' | 'shortcode' | nil
+---@param lines string[]
+---@return "math"|"divfence"|"shortcode"|nil
 local function special_paragraph(lines)
   local first = lines[1] or ""
   if first:match("^%s*%$%$") then return "math" end
@@ -145,6 +153,9 @@ local function special_paragraph(lines)
 end
 
 --- 处理一个 wrap 候选 paragraph，可能因特殊类型拆成多个块。
+---@param para TSNode
+---@param get_line fun(r:integer):string
+---@param out mdwrap.Block[]
 local function handle_paragraph(para, get_line, out)
   local psr, per = rows_of(para)
   local lines = {}
@@ -204,6 +215,9 @@ local function handle_paragraph(para, get_line, out)
 end
 
 --- 处理 block_quote：识别 callout 标题行，递归处理内部块。
+---@param bq TSNode
+---@param get_line fun(r:integer):string
+---@param out mdwrap.Block[]
 local function handle_block_quote(bq, get_line, out)
   -- callout：引用内首个 paragraph 的首行匹配 [!NAME]
   for child in bq:iter_children() do
@@ -239,6 +253,9 @@ local function handle_block_quote(bq, get_line, out)
 end
 
 --- 递归遍历，产出块列表。
+---@param node TSNode
+---@param get_line fun(r:integer):string
+---@param out mdwrap.Block[]
 local function walk(node, get_line, out)
   for child in node:iter_children() do
     if child:named() then
@@ -273,14 +290,16 @@ end
 
 --- 切分缓冲区为块列表。
 ---@param bufnr integer
----@return table[] blocks
+---@return mdwrap.Block[] blocks
 function M.split(bufnr)
   local parser = vim.treesitter.get_parser(bufnr, "markdown")
+  ---@diagnostic disable-next-line: need-check-nil  -- 已加载的 parser，其 parse() 必产出至少一棵树
   local root = parser:parse(true)[1]:root()
   local all_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local function get_line(r)
     return all_lines[r + 1] or ""
   end
+  ---@type mdwrap.Block[]
   local out = {}
   walk(root, get_line, out)
   table.sort(out, function(a, b) return a.srow < b.srow end)

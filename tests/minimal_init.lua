@@ -21,6 +21,7 @@ for _, p in ipairs({
 end
 
 -- 触发 nvim-treesitter 运行时（注册查询）
+---@diagnostic disable-next-line: param-type-mismatch  -- vim.cmd 为可调用 table，LuaLS 误判
 pcall(vim.cmd, "runtime! plugin/nvim-treesitter.lua")
 
 -- 自检：markdown_inline highlights 查询是否可用（缺失则集成层无法扣 conceal）

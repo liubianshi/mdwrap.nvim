@@ -45,3 +45,32 @@
 - **延伸**：更完整的方案是 atoms 同时读取活动 conceal extmark（render-markdown 等注入的），
   v1 暂只内建处理 `$`;其余 conceal 仍以 highlights 查询为准。
 
+# 类型系统阶段的工具裁定（偏离类型系统建设计划处）
+
+以下两条不影响 golden 行为，而是「为 mdwrap.nvim 建立 LuaLS 规范类型系统」一计划中、
+被本机 `lua-language-server 3.18.2-dev` 实测推翻的假设。`tests/run_typecheck.sh` 以这两条为准。
+
+## 5. typecheck 判定信号：退出码 + 输出问题计数，而非 `check.json`
+
+- 计划原拟「以 `--logpath` 下是否生成 `check.json` 判定通过/失败」。
+- **实测推翻**：该版本 `--check` **从不生成 `check.json`**——有 8 个问题时 logpath 下只有 `.log`,
+  首版脚本据此误判「passed」。
+- **改用裁定**：失败信号 = `lua-language-server` **退出码非 0** *或* 输出末行 `N problems found`
+  的 **N>0**,二者取或（退出码本机实测可靠;计数解析作为退出码不可靠版本的兜底）。
+- 已用「故意把 `Atom.width` 写成字符串」验证此信号可靠地捕获(EXIT=1、捕获
+  `Cannot assign string to integer`)。
+
+## 6. 类型校验须给「累加器局部变量」显式标 `---@type`，返回注解不足以咬住
+
+- 计划设想「写错 `Atom.width` 即报错」。
+- **实测推翻**：仅靠 `---@return mdwrap.Atom[]`,LuaLS **不**回灌校验 `local out = {}` 里每个表
+  字面量的字段——返回类型只约束调用方,不反推构造端。
+- **改用裁定**：在构造原子/块的累加器局部变量上显式标注——`spacing.apply` 的 `out`、
+  `atoms.atomize` 的 `atoms`（均 `---@type mdwrap.Atom[]`）、`blocks.split` 的 `out`
+  （`---@type mdwrap.Block[]`）——字面量字段才进入校验。这是类型系统能否抓到 bug 的开关,
+  也契合计划「emit 构造的表即 Atom」「out 元素为 Block」的本意。
+- **连带（纯注解、零逻辑改动）**：`mdwrap.FormatOpts` 须自身也标 `(partial)`（`(partial)` 不沿
+  继承链传递,否则父类字段被当作必填）;`init.format_buffer` 的 `bufnr` 用 `---@cast bufnr integer`
+  收窄 `and/or` 惯用法;两处 tree-sitter `parse()[1]` 的 `need-check-nil` 与 `minimal_init` 的
+  `vim.cmd` 误报以行级 `---@diagnostic disable-next-line` 静默。
+

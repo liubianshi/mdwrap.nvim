@@ -12,7 +12,7 @@
 local M = {}
 
 --- 该原子「朝向某侧」参与盘古空格的角色：'cjk' | 'latin' | 'code' | nil
----@param atom table
+---@param atom mdwrap.Atom
 ---@param side string 'last'（右边界）或 'first'（左边界）
 local function role(atom, side)
   if atom.class == "cjk" then return "cjk" end
@@ -27,6 +27,8 @@ local function role(atom, side)
 end
 
 --- 两原子之间是否需要插入盘古空格。
+---@param prev mdwrap.Atom
+---@param cur mdwrap.Atom
 local function need_space(prev, cur)
   if prev.class == "space" or cur.class == "space" then return false end
   local l = role(prev, "last")
@@ -39,9 +41,10 @@ local function need_space(prev, cur)
 end
 
 --- 对原子列表施加盘古空格，返回新列表。
----@param atoms table[]
----@return table[]
+---@param atoms mdwrap.Atom[]
+---@return mdwrap.Atom[]
 function M.apply(atoms)
+  ---@type mdwrap.Atom[]
   local out = {}
   for i, a in ipairs(atoms) do
     if i > 1 and need_space(atoms[i - 1], a) then
