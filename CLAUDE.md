@@ -65,10 +65,18 @@ entry point.
 
 ## Single source of truth for visual width
 
-Conceal widths must come from the capture ranges carrying `conceal` metadata in the `markdown_inline`
-`highlights` query — **do not maintain a separate hand-written list of "what gets hidden"**, which would
-drift from what the editor actually displays. `strdisplaywidth` already honors `ambiwidth`; do not
-recompute East Asian width yourself. See design doc 4.2.1.
+Conceal widths come from **two complementary sources**, never a hand-written "what gets hidden" list
+(which would drift from the real display): (1) the capture ranges carrying `conceal` metadata in the
+`markdown_inline` `highlights` query (tree-sitter, the headless baseline — `**`, backticks); (2) the
+**persistent conceal / inline-`virt_text` extmarks** that render plugins (render-markdown.nvim,
+markview.nvim) put on the buffer (link-URL collapse, `$`, list/quote prefix icons). Source (2) is read
+in `conceal.lua` via `nvim_buf_get_extmarks(-1, …)` across **all namespaces** (plugin-agnostic, no
+allowlist) and translated to logical-string coords before reaching `atomize`. The two sources are
+**different mechanisms and cannot be unified** — tree-sitter conceal is a decoration provider invisible
+to `nvim_buf_get_extmarks`; overlaps are deduped by byte-range union. The width model is therefore
+`natural − hidden(union) + add` (extmark conceal subtracts, inline virt_text adds; net can be ±). There
+is **no `$` builtin special case** anymore — `$` flows through source (2). `strdisplaywidth` already
+honors `ambiwidth`; do not recompute East Asian width yourself. See design doc 4.2.1 and DECISIONS #4/#9.
 
 ## Development workflow: tests first + local empirical checks
 

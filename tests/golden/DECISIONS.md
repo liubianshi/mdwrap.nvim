@@ -42,8 +42,10 @@
 - **实现**：`atoms.lua` 把 `latex_span_delimiter`（`$`）作为**内建 conceal**（手动扣宽 0），
   使 headless golden（无 render-markdown）确定可复现,并匹配用户真实显示。
   这是范围限定于数学定界符的显式例外,不破坏「conceal 主要来自 highlights 查询」的总原则。
-- **延伸**：更完整的方案是 atoms 同时读取活动 conceal extmark（render-markdown 等注入的），
-  v1 暂只内建处理 `$`;其余 conceal 仍以 highlights 查询为准。
+- **延伸（M5-A 落地，已推翻「v1 只内建」）**：`atoms.lua` 的 `BUILTIN_CONCEAL_TYPES`
+  （`latex_span_delimiter`）**已删除**,`$` 不再当特例,统一并入通用 extmark 路径(见第 9 条)。
+  连带:golden 11 新增 `setup.lua` 注入 `$` conceal 模拟 render-markdown,`expected.md` 字节不变。
+  其余 conceal 仍以 highlights 查询为准;两源(查询 + extmark)按字节并集去重。
 
 # 编辑器集成阶段的裁定（设计文档未覆盖处）
 
@@ -129,4 +131,57 @@
   `layout.lua` 的 `level_of`（唯一逻辑改动:`.` 触发时查 `is_abbrev`）。短行容忍度
   `min(60,w-20)`/`min(12,w-20)` 不变,英文自动复用既有「句末/子句优先 + 短行容忍」机制。
 - **零回归**：旧 26 个 golden 字节不变（含英文的用例未位移）,故未触碰任何既有 `expected`。
+
+# 插件无关的「外部渲染 conceal」宽度感知（M5）
+
+设计文档只覆盖 tree-sitter conceal 与内建 `$`。本条记录把宽度真相源扩展到**渲染插件注入的
+持久 extmark**（render-markdown.nvim / markview.nvim 等）这一裁定。M5-A 落地行内,M5-B 落地前缀。
+
+## 9. 通用 extmark conceal 路线：全 namespace 自动过滤、行内 + 前缀、conform 逐行内容保护
+
+- **背景**：用户用 render-markdown.nvim 渲染中文 Markdown,它以**持久 extmark**改变实际显示
+  宽度——`conceal` 隐藏 `**`/链接 url/`$`/列表·引用前缀符,inline `virt_text` 插图标
+  （链接图标、bullet 图标）。`[文档](https://很长的url)` 显示成「图标 + 文档」,40 字 url 塌成
+  2 宽图标。mdwrap 只认 tree-sitter conceal,折出来的行与屏幕对不齐。
+- **用户裁定**：
+  1. **插件无关**——不绑 render-markdown（将来可能换 markview）。用 **extmark 为通用真相源**:
+     任何同机制渲染插件都往 buffer 放持久 extmark,读**所有 namespace**（`nvim_buf_get_extmarks`
+     的 ns=`-1`）,按「带 conceal / 带 inline virt_text」**自动过滤**,不引入 allowlist 配置。
+  2. **覆盖行内 + 前缀**两类宽度（M5-A 行内 / M5-B 前缀）。
+  3. **`$` 等不再当特例**——`$`、`**` 都能用 extmark 表达,删 `BUILTIN_CONCEAL_TYPES`,统一走
+     extmark 路径（见第 4 条修订）。注:tree-sitter 的 `**`/反引号 conceal 是 decoration
+     provider 的**临时**标记,`nvim_buf_get_extmarks` 物理上读不到,**仍走 highlights 查询源**;
+     故终局是「查询源 + extmark 源」两路并存,重叠按字节并集去重,消不成一路。
+- **宽度模型泛化**：由「自然宽 − 隐藏」改为「自然宽 − 隐藏(并集去重) + 加」。extmark 的
+  conceal 净减、inline virt_text 净加,组合后增量**可正可负**。`atoms.visual_width` 与 cjk/word
+  原子宽都按此算;inline 图标锚点落在某原子字节区间内即并入该原子宽（链接图标自然并入
+  `inline_link` atomic 段；普通文本图标 attach 到包含它的 cjk/word 原子,可接受）。
+- **坐标映射（核心难点）**：extmark 在**原始 buffer (row,col)**,conceal 区间须翻译到
+  `merge_lines` 合成的**逻辑串字节坐标**才能喂 `atomize`。分段线性:
+  `layout.merge_lines_mapped` 产出 `segs[k]={lstart,lend,strip_lead}`;`blocks.strip_prefix`
+  额外返回每行剥掉的前缀字节数 `removed`（存入 `block.content_removed`）。则
+  `源行偏移 = buffer_col − removed_k`,`逻辑偏移 = seg.lstart + (源行偏移 − strip_lead)`;
+  `col < removed_k` 的落在前缀区（M5-B）。`conceal.lua` 是唯一新碰 extmark API 的 vim 层模块;
+  `layout`/`spacing`/`chardata` 仍零 vim 依赖（`merge_lines_mapped` 与前缀宽度覆盖均纯函数,可单测）。
+- **conform 链式失同步保护**：conform 串多个 formatter 时在内存里逐棒传 `lines`,中途不回写
+  buffer,故 `ctx.buf` 的 extmark 相对传入 `lines` 可能是旧的。裁定:`conceal.gather` 接
+  `expected_lines`,**逐行内容比对**,buffer 行与传入行不符则**丢弃该行 extmark**（回退纯
+  tree-sitter）。`format_buffer` 路径 buffer 即真相源,不传 `expected_lines`。
+- **anti-conceal 光标行**：render-markdown 的 anti-conceal 使**光标所在行**临时显示原始标记
+  （不渲染）。mdwrap 按**当前 extmark 实况**记账——光标行此刻无渲染 extmark → 按原始宽折行,
+  与「光标行此刻显示原始标记」一致;不强制重渲染。**已知行为**,非缺陷。
+- **门控**：`respect_conceallevel=false` 或 `respect_extmark_conceal=false` 或窗口
+  `conceallevel=0` → 不读 extmark（增量 0,退化为纯 tree-sitter 宽度）。headless 无渲染插件
+  ⇒ 无持久 extmark ⇒ 增量 0 ⇒ 既有 29 golden 零回归。
+- **注入式 golden**：`test_runner` 支持每例可选 `setup.lua`（签名 `function(bufnr)`),格式化前
+  注入合成 extmark 模拟渲染插件。须**按内容定位**（扫 `[..](..)`/`$..$`/段首）,因 test_runner
+  的幂等/块外/语义复跑会在重折后的 buffer 上再灌一次,固定坐标会错位。新增:
+  `30-extmark-inline-link`（链接塌缩,隐藏 + 图标）、`31-extmark-highlight`（inline 图标 +add
+  把断点前移一字）、`32-extmark-list-prefix`（任务框 `- [ ] ` 塌成图标,前缀渲染宽 6→2）、
+  `33-extmark-quote-prefix`（引用 `> ` 渲成 0 宽行内前缀,首行+续行前缀同覆盖）。
+- **前缀净增量实现细化**：前缀区隐藏宽用 `block.prefix_first`/`prefix_rest` 字符串切片量
+  （`width_fn(prefix:sub(cs+1, min(ce,removed)))`），**未**在 block 另存 `content_prefix`——
+  标准 `- [ ] `/`> ` 前缀下,首行 prefix_first、续行 prefix_rest 即剥掉的前缀文本,够用且更省。
+  续行 prefix_rest_width 取**首个有前缀 mark 的续行** delta 为代表（渲染一致，互为代表）。
+  前缀渲染宽 = 字面宽 + (Σadd − Σhidden) ≥ 0（hidden 是前缀子串,必 ≤ 字面宽;add ≥ 0）。
 

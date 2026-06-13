@@ -14,6 +14,7 @@ function M.defaults()
     lang = "zh",                 -- 预留；v1 仅 zh
     cjk_english_spacing = true,  -- 盘古之白 pass
     respect_conceallevel = true, -- conceallevel=0 的窗口不扣 conceal 宽度
+    respect_extmark_conceal = true, -- 读持久 conceal extmark（render-markdown/markview 等渲染插件的宽度增量）；插件无关
     notify_on_error_node = true, -- 块含 ERROR 节点跳过时提示
     set_formatexpr = true,       -- false 时不注册 formatexpr，把 gq 让回默认（交 conform 等接管）
   }

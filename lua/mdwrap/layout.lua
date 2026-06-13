@@ -90,16 +90,28 @@ local function is_punct_attr(attr)
     or attr == "PUN_FORBIT_BREAK_AFTER"
 end
 
---- 把多行（块内原有软换行）合并为一条逻辑长行。
+--- 把多行（块内原有软换行）合并为一条逻辑长行，并产出**段映射**。
 --- 换行两侧：右首为宽字符且左末为空/空白/非 OTHER ⇒ 无空格拼接；
 --- 左末为标点类 ⇒ 无空格拼接；其余 ⇒ 一个空格连接。
+---
+--- segs[k] 描述第 k 条 content 行在逻辑串里的占位，供「源行字节偏移 ↔ 逻辑串字节偏移」
+--- 互转（extmark 坐标回推用，纯函数、可单测）：
+---   * lstart/lend：该行内容在逻辑串中的 [lstart,lend) 字节区间（已去前导/行尾空白后）。
+---   * strip_lead：该行被 `^%s+` 去掉的前导空白字节数（首行恒 0；它去的是行尾空白，不挪前导坐标）。
+---   * 段内换算：逻辑偏移 = lstart + (源行偏移 − strip_lead)；反向：源行偏移 = 逻辑偏移 − lstart + strip_lead。
+---   * empty=true：该行去空白后为空，不贡献内容（lstart==lend）。
 ---@param lines string[]
----@return string
-function M.merge_lines(lines)
-  if #lines == 0 then return "" end
-  local result = (lines[1]:gsub("%s+$", ""))
+---@return string str, table[] segs  -- segs[k] = { lstart, lend, strip_lead, empty? }
+function M.merge_lines_mapped(lines)
+  if #lines == 0 then return "", {} end
+  local segs = {}
+  local first = (lines[1]:gsub("%s+$", ""))
+  local result = first
+  segs[1] = { lstart = 0, lend = #first, strip_lead = 0 }
   for k = 2, #lines do
-    local right = (lines[k]:gsub("^%s+", ""))
+    local raw = lines[k]
+    local right = (raw:gsub("^%s+", ""))
+    local strip_lead = #raw - #right
     if right ~= "" then
       local lc = last_char(result)
       local rc = first_char(right)
@@ -118,10 +130,21 @@ function M.merge_lines(lines)
       else
         sep = " "
       end
+      local lstart = #result + #sep
       result = result .. sep .. right
+      segs[k] = { lstart = lstart, lend = #result, strip_lead = strip_lead }
+    else
+      segs[k] = { lstart = #result, lend = #result, strip_lead = strip_lead, empty = true }
     end
   end
-  return result
+  return result, segs
+end
+
+--- 把多行合并为一条逻辑长行（不需要段映射时的薄包装；输出与 merge_lines_mapped 第一返回值一致）。
+---@param lines string[]
+---@return string
+function M.merge_lines(lines)
+  return (M.merge_lines_mapped(lines)) -- 括号截断第二返回值（segs）
 end
 
 -- ----------------------------------------------------------------------------
@@ -244,7 +267,15 @@ function M.wrap(atoms, opts)
   local line_idx = 0
   while i <= m do
     local prefix = (line_idx == 0) and prefix_first or prefix_rest
-    local avail = width - width_fn(prefix)
+    -- 前缀占宽：默认量 prefix 字面宽；若调用方给了 prefix_*_width（前缀被渲染插件
+    -- conceal/换图标导致显示宽≠字面宽，M5-B），取覆盖值。输出仍是字面前缀，只改记账。
+    local pw
+    if line_idx == 0 then
+      pw = opts.prefix_first_width or width_fn(prefix)
+    else
+      pw = opts.prefix_rest_width or width_fn(prefix)
+    end
+    local avail = width - pw
     if avail < 1 then avail = 1 end
 
     -- 2) 贪心拟合区 i..k（累计宽 ≤ avail），记录每 token 处累计宽

@@ -26,6 +26,8 @@
 ---@field prefix_first? string   wrap 块首行前缀（引用/列表标记）
 ---@field prefix_rest? string    wrap 块续行前缀（等宽空格对齐）
 ---@field content_lines? string[] wrap 块剥前缀后的正文行
+---@field content_prefix? string[] 各 content 行被 strip_prefix 剥掉的**前缀字符串**（与 content_lines 等长）。
+---                                #prefix = 回推 extmark buffer 列的字节数；其文本用于量前缀区隐藏宽（M5-B）。
 
 ---@class mdwrap.Config            -- 解析后内部配置（字段非可选）
 ---@field width integer|nil
@@ -34,6 +36,7 @@
 ---@field lang "zh"
 ---@field cjk_english_spacing boolean
 ---@field respect_conceallevel boolean
+---@field respect_extmark_conceal boolean  -- false 时不读持久 conceal extmark（render-markdown/markview 等渲染插件的宽度增量）
 ---@field notify_on_error_node boolean
 ---@field set_formatexpr boolean    -- false 时 plugin/mdwrap.lua 不注册 formatexpr（把 gq 让回默认，交 conform 等接管）
 
@@ -49,12 +52,23 @@
 ---@field width? integer
 ---@field prefix_first? string
 ---@field prefix_rest? string
+---@field prefix_first_width? integer  -- 给定则取代 width_fn(prefix_first) 作为首行前缀占宽（前缀含 conceal/图标渲染时用，M5-B）
+---@field prefix_rest_width? integer   -- 同上，续行前缀占宽
 ---@field wrap_sentence? boolean
 ---@field width_fn? mdwrap.WidthFn
+
+--- 已翻译到逻辑串字节坐标的持久 extmark conceal 覆盖项（render-markdown/markview 等渲染插件注入）。
+--- [sc,ec) 为隐藏字节区间（sc==ec 表示纯加宽锚点，无隐藏）；add 为 inline virt_text 图标
+--- 与 conceal 替换字符的附加视觉宽，锚定在 sc。宽度模型：visual = 自然宽 − 隐藏(并集去重) + add。
+---@class mdwrap.ExtmarkConceal
+---@field sc integer    隐藏区间起（0-indexed 字节，含）
+---@field ce integer    隐藏区间止（0-indexed 字节，不含）
+---@field add integer   附加视觉宽（≥0），锚定在 sc
 
 ---@class mdwrap.AtomizeOpts
 ---@field width_fn? mdwrap.WidthFn
 ---@field conceal? boolean
+---@field extmark_conceal? mdwrap.ExtmarkConceal[]  -- 逻辑串坐标的 extmark conceal 覆盖，与 tree-sitter conceal 合并去重
 
 ---@class mdwrap.GoldenResult       -- test_runner.run 返回
 ---@field name string

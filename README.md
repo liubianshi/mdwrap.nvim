@@ -12,6 +12,10 @@
 ## 特性
 
 - **conceal 感知折行**：宽度来自 `markdown_inline` 高亮查询的 conceal 元数据，与编辑器实际显示一致。
+- **插件无关的外部渲染感知**：除 tree-sitter conceal 外，还读 buffer 上的**持久 conceal extmark**
+  （隐藏标记）与 **inline `virt_text`**（插图标），故 [render-markdown.nvim](https://github.com/MeanderingProgrammer/render-markdown.nvim)
+  / [markview.nvim](https://github.com/OXY2DEV/markview.nvim) 等把长链接塌成图标、把 `$`/`**` 隐藏时，
+  折行仍与屏幕对齐。读所有 namespace 自动过滤，不绑定具体插件；可用 `respect_extmark_conceal` 关闭。
 - **中文禁则**：`。，」』）》】` 等绝不落行首（溢出回收到上一行）；`「『（《【` 等绝不落行尾（推到下一行）。
 - **句末优先断行**：宁可行短一些，也让行尾落在句号、分号等强标点上（可用 `wrap_sentence` 关闭）。
   中英文一视同仁——半角 `. : ; ! ?` 与全角 `。：；！？` 同为句级断点，`,`／`，`／`、` 为子句级
@@ -29,9 +33,9 @@
 - 已安装 `markdown` 与 `markdown_inline` parser。
 - 建议安装 [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter)，
   以提供 `markdown_inline` 的 `highlights` 查询（conceal 宽度的来源）。
-- 行内数学 `$…$` 的 `$` 定界符宽度依赖渲染插件（如
-  [render-markdown.nvim](https://github.com/MeanderingProgrammer/render-markdown.nvim)）的 conceal；
-  本插件内建把 `$` 视为隐藏（不计宽），与上述渲染一致。
+- 行内数学 `$…$` 的 `$` 定界符、链接 URL、列表/引用前缀图标等**渲染插件特有的 conceal**，
+  通过读 buffer 上的持久 extmark 自动感知（插件无关，见上「外部渲染感知」）。未装渲染插件时
+  这些字符按字面宽计入——`conceallevel=0` 或无渲染 extmark 即此情形，行为确定、零依赖。
 
 ## 安装
 
@@ -72,6 +76,7 @@ require("mdwrap").setup({
   lang = "zh",                  -- 预留；v1 仅 zh
   cjk_english_spacing = true,   -- 盘古之白：CJK↔拉丁/数字、CJK↔行内代码 之间插空格
   respect_conceallevel = true,  -- conceallevel=0 的窗口不扣 conceal 宽度
+  respect_extmark_conceal = true, -- 读渲染插件（render-markdown/markview 等）的持久 conceal extmark；插件无关
   notify_on_error_node = true,  -- 块含 ERROR 节点（畸形）跳过时提示
   set_formatexpr = true,        -- false 时不对上述 filetype 注册 formatexpr，把 gq 让回默认（交由 conform 等接管）
 })

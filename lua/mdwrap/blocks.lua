@@ -124,19 +124,24 @@ local function compute_prefix(para, get_line)
   return prefix_first, prefix_rest, quote_part
 end
 
---- 去除某行的前缀，返回正文内容。
+--- 去除某行的前缀，返回正文内容与**被剥掉的前缀字节数** removed。
+--- removed 供 extmark buffer 列坐标回推：source_col = buffer_col − removed（见 init.process_wrap）。
 --- 续行：剥去引用标记串；首行已知 prefix_first。
+---@return string content, integer removed
 local function strip_prefix(line, is_first, prefix_first, quote_part)
   if is_first then
-    return line:sub(#prefix_first + 1)
+    return line:sub(#prefix_first + 1), #prefix_first
   end
-  -- 续行：剥去引用前缀（与 quote_part 等量的 `>%s?`），再剥同等数量前导空格
+  -- 续行：剥去引用前缀（与 quote_part 等量的 `>%s?`）
   local s = line
   local qn = select(2, quote_part:gsub(">", ">"))
+  local removed = 0
   for _ = 1, qn do
+    local before = #s
     s = s:gsub("^>%s?", "", 1)
+    removed = removed + (before - #s)
   end
-  return s
+  return s, removed
 end
 
 --- 判定一个顶层 paragraph 的特殊类型（数学块 / div 围栏 / shortcode）。
@@ -178,10 +183,10 @@ local function handle_paragraph(para, get_line, out)
       -- 一趟构造：遇 ::: 行就收口当前 wrap 子块（连同 content_lines）并落一个 preserve 行。
       local function flush_wrap()
         if buf_wrap then
-          local cl = {}
-          for rr = buf_wrap, r - 1 do cl[#cl + 1] = get_line(rr) end
+          local cl, pf = {}, {}
+          for rr = buf_wrap, r - 1 do cl[#cl + 1] = get_line(rr); pf[#pf + 1] = "" end -- 无前缀
           out[#out + 1] = { action = "wrap", srow = buf_wrap, erow = r - 1,
-            prefix_first = "", prefix_rest = "", content_lines = cl }
+            prefix_first = "", prefix_rest = "", content_lines = cl, content_prefix = pf }
           buf_wrap = nil
         end
       end
@@ -201,9 +206,11 @@ local function handle_paragraph(para, get_line, out)
 
   -- 普通 wrap paragraph（含引用 / 列表前缀）
   local prefix_first, prefix_rest, quote_part = compute_prefix(para, get_line)
-  local content = {}
+  local content, prefixes = {}, {}
   for idx, l in ipairs(lines) do
-    content[#content + 1] = strip_prefix(l, idx == 1, prefix_first, quote_part)
+    local rm
+    content[idx], rm = strip_prefix(l, idx == 1, prefix_first, quote_part)
+    prefixes[idx] = l:sub(1, rm) -- 实际剥掉的前缀串（量前缀区隐藏宽用）
   end
   out[#out + 1] = {
     action = "wrap",
@@ -211,6 +218,7 @@ local function handle_paragraph(para, get_line, out)
     prefix_first = prefix_first,
     prefix_rest = prefix_rest,
     content_lines = content,
+    content_prefix = prefixes,
   }
 end
 
@@ -235,12 +243,15 @@ local function handle_block_quote(bq, get_line, out)
             local _, _, quote_part = compute_prefix(child, get_line)
             -- callout 正文沿用引用前缀（quote_part，如 "> "）
             local bf = quote_part
-            local content = {}
+            local content, prefixes = {}, {}
             for r = psr + 1, per do
-              content[#content + 1] = strip_prefix(get_line(r), false, bf, quote_part)
+              local line = get_line(r)
+              local c, rm = strip_prefix(line, false, bf, quote_part)
+              content[#content + 1] = c
+              prefixes[#prefixes + 1] = line:sub(1, rm)
             end
             out[#out + 1] = { action = "wrap", srow = psr + 1, erow = per,
-              prefix_first = bf, prefix_rest = bf, content_lines = content }
+              prefix_first = bf, prefix_rest = bf, content_lines = content, content_prefix = prefixes }
           end
         else
           handle_paragraph(child, get_line, out)

@@ -26,10 +26,14 @@ local function first_diff(a, b)
 end
 
 --- 在新缓冲区格式化给定输入行，返回输出行。
-local function format_lines(input, opts)
+--- setup（可选）：function(bufnr) 在格式化**前**注入合成 extmark，模拟 render-markdown /
+--- markview 等渲染插件。它在**每次**格式化前都跑（含幂等/块外/语义复跑），故须按**内容**
+--- 定位标记（扫 buffer 找链接 / `$..$` / 段首），才能在重折后的 buffer 上仍对齐。
+local function format_lines(input, opts, setup)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, input)
   vim.bo[buf].filetype = "markdown"
+  if setup then setup(buf) end
   require("mdwrap").format_buffer(buf, opts)
   local out = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   vim.api.nvim_buf_delete(buf, { force = true })
@@ -62,8 +66,13 @@ function M.run(case_dir)
   if vim.fn.filereadable(case_dir .. "/opts.lua") == 1 then
     opts = dofile(case_dir .. "/opts.lua")
   end
+  -- 可选 setup.lua：注入合成 extmark 模拟渲染插件（按内容定位，每次格式化前都跑）。
+  local setup
+  if vim.fn.filereadable(case_dir .. "/setup.lua") == 1 then
+    setup = dofile(case_dir .. "/setup.lua")
+  end
 
-  local got = format_lines(input, opts)
+  local got = format_lines(input, opts, setup)
   local pass = lines_eq(got, expected)
   local detail
   if not pass then
@@ -71,13 +80,13 @@ function M.run(case_dir)
     detail = string.format("line %d:\n    got : %s\n    want: %s", i or -1, vim.inspect(g), vim.inspect(e))
   end
 
-  -- 不变量 1：幂等
-  local got2 = format_lines(got, opts)
+  -- 不变量 1：幂等（setup 按内容重定位，二次折行复现 → 增量一致）
+  local got2 = format_lines(got, opts, setup)
   local idem = lines_eq(got2, got)
 
   -- 不变量 3：pandoc 语义保持（关 spacing 重跑，避免故意改文本）
   local sem_opts = vim.tbl_extend("force", opts, { cjk_english_spacing = false })
-  local sem_out = format_lines(input, sem_opts)
+  local sem_out = format_lines(input, sem_opts, setup)
   local semantic = pandoc_semantic(input, sem_out)
 
   -- 不变量 2：块外字节不变（用 preserve 类垃圾块前后包裹，验证包裹部分逐字节不变）。
@@ -92,7 +101,7 @@ function M.run(case_dir)
     vim.list_extend(wrapped, HEAD)
     vim.list_extend(wrapped, input)
     vim.list_extend(wrapped, TAIL)
-    local wout = format_lines(wrapped, opts)
+    local wout = format_lines(wrapped, opts, setup)
     outside = true
     for j = 1, #HEAD do if wout[j] ~= HEAD[j] then outside = false end end
     for j = 1, #TAIL do if wout[#wout - #TAIL + j] ~= TAIL[j] then outside = false end end
