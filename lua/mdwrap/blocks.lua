@@ -285,8 +285,8 @@ local function walk(node, get_line, out)
         handle_block_quote(child, get_line, out)
       elseif t == "list" or t == "list_item" or t == "section" or t == "document" then
         walk(child, get_line, out)
-      elseif IGNORE_TYPES[t] then
-        -- 结构 token：跳过
+      elseif IGNORE_TYPES[t] then -- luacheck: ignore 542
+        -- 结构 token：有意跳过，分支故意为空（与下方 else 的「未知块保守 preserve」语义不同）
       elseif t == "ERROR" then
         local sr, er = rows_of(child)
         out[#out + 1] = { action = "preserve", srow = sr, erow = er }

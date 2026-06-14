@@ -4,8 +4,8 @@
 
 std = "luajit"
 
--- Neovim 注入的全局（只读引用，不允许整体赋值）
-read_globals = { "vim" }
+-- Neovim 注入的全局：用 globals（而非 read_globals），以允许 vim.bo/vim.o 等字段赋值
+globals = { "vim" }
 
 -- types.lua 是 LuaCATS meta 文件，运行时从不被 require，仅含 ---@class 注解，排除。
 exclude_files = { "lua/mdwrap/types.lua" }
