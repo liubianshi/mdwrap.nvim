@@ -9,8 +9,9 @@
 入口为 `formatexpr`（`gq` 系列）与 `:MdwrapFormat` 命令。本插件是 Perl 工具
 [mdwrap](https://github.com/) 的 Neovim 重写，只迁移领域知识，不沿用其架构。
 
-> **项目状态**：本项目主要由 [Claude Code](https://www.anthropic.com/claude-code) 编写，目前处于
-> 早期阶段，接口与折行行为会经常大幅调整；变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+> [!WARNING]
+> 本项目主要由 [Claude Code](https://www.anthropic.com/claude-code) 编写，目前处于早期阶段，
+> 接口与折行行为会经常大幅调整；变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 特性
 
