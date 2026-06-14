@@ -287,6 +287,9 @@ function M.wrap(atoms, opts)
     if not can_break_before(b) then return false end
     -- 全角标点旁恒为断行机会（句末/逗号后断；禁前标点的「前」已被 can_break_* 挡掉）。
     if is_punct_class(a) or is_punct_class(b) then return true end
+    -- atomic 原子（链接/引用/数学/shortcode 等不可分单元）边界恒可断：相当于一个「词」，
+    -- 在其前后换行是合理排版，不属于「汉字之间硬断」，故不受「仅标点断」约束。
+    if a.class == "atomic" or b.class == "atomic" then return true end
     -- 普通 CJK 字间：仅在许可时可断（严格模式默认禁止，无标点超长子句兜底时放开）。
     if allow_cjk_cur and (is_wide_class(a) or is_wide_class(b)) then return true end
     return false
@@ -349,15 +352,20 @@ function M.wrap(atoms, opts)
       -- 单 token 自身超宽（长 URL / 超长代码）：独占一行，允许超宽（4.3.6）
       endj = i
     else
-      -- 严格模式兜底探测：先以「仅标点」口径（allow_cjk_cur=false）查拟合区 [i,k] 内有无断点；
-      -- 若一个都没有（无标点的超长子句），放开字间断作兜底，否则保持「只在标点断」。
+      -- 严格模式兜底探测：先以「仅标点」口径（allow_cjk_cur=false）查拟合区 [i,k] 内有无断点。
+      -- 无标点断点（超长无标点子句）时按模式分流：
+      --   wrap_sentence=true（按宽填满）→ 放开字间断兜底，按宽断满；
+      --   wrap_sentence=false（句末优先）→ 整段溢出到下一个标点（或行尾），绝不在非标点处断。
       allow_cjk_cur = not punct_only
+      local overflow_to_punct = false
       if punct_only then
         local has_punct_break = false
         for tt = i, k do
           if after_breakable(tt) then has_punct_break = true; break end
         end
-        if not has_punct_break then allow_cjk_cur = true end
+        if not has_punct_break then
+          if wrap_sentence then allow_cjk_cur = true else overflow_to_punct = true end
+        end
       end
 
       -- 3) 断点优先级扫描：ZWSP（最高，保留）＞ sentence ＞ clause（4.3.4）
@@ -370,7 +378,12 @@ function M.wrap(atoms, opts)
           if lv == "clause" and cum[tt] >= avail - allow_c then clause = tt end
         end
       end
-      if zbest then
+      if overflow_to_punct then
+        -- 无标点超长子句 + 句末优先：整段溢出到下一个标点断点（或行尾），绝不在非标点处断。
+        local e = k
+        while e < m and not after_breakable(e) do e = e + 1 end
+        endj = e
+      elseif zbest then
         endj = zbest
       elseif (not wrap_sentence) and sent then
         endj = sent
