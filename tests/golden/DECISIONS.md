@@ -185,3 +185,21 @@
   续行 prefix_rest_width 取**首个有前缀 mark 的续行** delta 为代表（渲染一致，互为代表）。
   前缀渲染宽 = 字面宽 + (Σadd − Σhidden) ≥ 0（hidden 是前缀子串,必 ≤ 字面宽;add ≥ 0）。
 
+# 中文严格「只在标点断行」+ 字间断兜底（cjk_break_at_punct_only，默认开）
+
+- **背景**：design 4.3.4 的 normal 等级允许**任意相邻 CJK 字之间断行**（传统逐字排版）。当一行的
+  标点断点（句末／逗号）都被短行容忍度拒绝时,折行退化为「在某个汉字之间断」,与用户全局 Markdown
+  规则「中文 punctuation is the only legal break point」相悖。README 第 14 行那条特性正是触发此现象
+  的实例：`width=70` 时断在「显示」与「一致」之间。
+- **用户裁定（两问收敛）**：
+  1. **默认中文仅在标点处断行**——`gap_breakable` 中普通 CJK 字间不再是断点,只有全角标点旁
+     （`punct_no_break_before`／`punct_no_break_after`）才可断。
+  2. **字间断仅作兜底**——遇到「比一行还长且中间无任何标点」的子句（否则无合法断点,会退化成单字
+     一行）,才临时放开字间断按宽填满。
+  3. **落地为配置开关 `cjk_break_at_punct_only`,默认 `true`**；置 `false` 退回传统逐字可断。
+- **实现**：纯逻辑,集中在 `layout.wrap`。每行循环开始处用「仅标点」口径（`allow_cjk_cur=false`）探测
+  拟合区 [i,k] 有无断点：有 → 严格只在标点断；一个都没有 → 置 `allow_cjk_cur=true` 兜底。新增
+  `is_punct_class` 区分「全角标点」与「普通 CJK」;`config.lua`／`types.lua`／`init.lua` 透传字段。
+- **零回归**：既有 33 个 golden 全部经各自 `opts.lua` 注入 `cjk_break_at_punct_only=false` 保持字节
+  不变（旧用例 `expected` 一字未改,守住「不得为过测试改 expected」红线）；严格模式另立新用例覆盖。
+

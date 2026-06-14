@@ -13,6 +13,7 @@ function M.defaults()
     keep_origin_wrap = false,    -- REF: --keep-origin-wrap；true 时不合并原有换行
     lang = "zh",                 -- 预留；v1 仅 zh
     cjk_english_spacing = true,  -- 盘古之白 pass
+    cjk_break_at_punct_only = true, -- 中文严格只在标点处断行；无标点的超长子句才字间断兜底
     respect_conceallevel = true, -- conceallevel=0 的窗口不扣 conceal 宽度
     respect_extmark_conceal = true, -- 读持久 conceal extmark（render-markdown/markview 等渲染插件的宽度增量）；插件无关
     notify_on_error_node = true, -- 块含 ERROR 节点跳过时提示

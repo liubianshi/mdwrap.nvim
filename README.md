@@ -17,6 +17,9 @@
   / [markview.nvim](https://github.com/OXY2DEV/markview.nvim) 等把长链接塌成图标、把 `$`/`**` 隐藏时，
   折行仍与屏幕对齐。读所有 namespace 自动过滤，不绑定具体插件；可用 `respect_extmark_conceal` 关闭。
 - **中文禁则**：`。，」』）》】` 等绝不落行首（溢出回收到上一行）；`「『（《【` 等绝不落行尾（推到下一行）。
+- **中文只在标点断**：默认中文仅在标点处换行，不在普通汉字之间断；
+  只有「比一行还长且中间无任何标点」的子句才退化为字间断兜底（避免无处可断）。
+  可用 `cjk_break_at_punct_only = false` 退回传统逐字可断。
 - **句末优先断行**：宁可行短一些，也让行尾落在句号、分号等强标点上（可用 `wrap_sentence` 关闭）。
   中英文一视同仁——半角 `. : ; ! ?` 与全角 `。：；！？` 同为句级断点，`,`／`，`／`、` 为子句级
   最后手段；英文另带缩写保护（`Dr.`／`e.g.`／`U.S.` 等不误判为句末）。
@@ -75,6 +78,7 @@ require("mdwrap").setup({
   keep_origin_wrap = false,     -- true 时不合并原有换行（仅清行尾空白 + 盘古空格）
   lang = "zh",                  -- 预留；v1 仅 zh
   cjk_english_spacing = true,   -- 盘古之白：CJK↔拉丁/数字、CJK↔行内代码 之间插空格
+  cjk_break_at_punct_only = true, -- 中文仅在标点处断行；false 退回传统 CJK 逐字可断
   respect_conceallevel = true,  -- conceallevel=0 的窗口不扣 conceal 宽度
   respect_extmark_conceal = true, -- 读渲染插件（render-markdown/markview 等）的持久 conceal extmark；插件无关
   notify_on_error_node = true,  -- 块含 ERROR 节点（畸形）跳过时提示

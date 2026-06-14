@@ -184,6 +184,7 @@ function M.wrap(atoms, opts)
   local prefix_first = opts.prefix_first or ""
   local prefix_rest = opts.prefix_rest or ""
   local wrap_sentence = opts.wrap_sentence or false
+  local punct_only = opts.cjk_break_at_punct_only or false
   local width_fn = opts.width_fn or function(s) return #s end
 
   -- 短行容忍度（4.3.4），以配置 width 为基准
@@ -231,6 +232,18 @@ function M.wrap(atoms, opts)
     return c == "cjk" or c == "punct_no_break_before" or c == "punct_no_break_after"
   end
 
+  -- 全角标点类（标点旁恒可断，不受「仅标点断」约束）。
+  local function is_punct_class(a)
+    local c = a.class
+    return c == "punct_no_break_before" or c == "punct_no_break_after"
+  end
+
+  -- 本行字间断许可（每行循环开始处按需设定）：
+  --   非严格模式恒 true（传统 CJK 字间可断）；
+  --   严格模式（punct_only）默认 false，仅当本行拟合区内无任何标点断点时临时置 true 作兜底，
+  --   避免「无标点的超长中文子句」无处可断而退化成单字一行。
+  local allow_cjk_cur = not punct_only
+
   -- token k 之「前」的间隙是否可断（k>=2）
   local function gap_breakable(k)
     if gmeta(k).space then return true end
@@ -238,8 +251,10 @@ function M.wrap(atoms, opts)
     local a, b = tokens[k - 1], tokens[k]
     if not can_break_after(a) then return false end
     if not can_break_before(b) then return false end
-    -- 宽字符（CJK / 全角标点）旁存在断行机会；两个普通 word 之间无空格则不可断。
-    if is_wide_class(a) or is_wide_class(b) then return true end
+    -- 全角标点旁恒为断行机会（句末/逗号后断；禁前标点的「前」已被 can_break_* 挡掉）。
+    if is_punct_class(a) or is_punct_class(b) then return true end
+    -- 普通 CJK 字间：仅在许可时可断（严格模式默认禁止，无标点超长子句兜底时放开）。
+    if allow_cjk_cur and (is_wide_class(a) or is_wide_class(b)) then return true end
     return false
   end
 
@@ -297,6 +312,17 @@ function M.wrap(atoms, opts)
       -- 单 token 自身超宽（长 URL / 超长代码）：独占一行，允许超宽（4.3.6）
       endj = i
     else
+      -- 严格模式兜底探测：先以「仅标点」口径（allow_cjk_cur=false）查拟合区 [i,k] 内有无断点；
+      -- 若一个都没有（无标点的超长子句），放开字间断作兜底，否则保持「只在标点断」。
+      allow_cjk_cur = not punct_only
+      if punct_only then
+        local has_punct_break = false
+        for tt = i, k do
+          if after_breakable(tt) then has_punct_break = true; break end
+        end
+        if not has_punct_break then allow_cjk_cur = true end
+      end
+
       -- 3) 断点优先级扫描：ZWSP（最高，保留）＞ sentence ＞ clause（4.3.4）
       local zbest, sent, clause
       for tt = i, k do
