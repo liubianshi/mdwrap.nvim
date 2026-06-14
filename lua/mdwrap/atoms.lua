@@ -191,15 +191,17 @@ function M.atomize(str, opts)
 
   ---@type mdwrap.Atom[]
   local atoms = {}
-  local pending = ""      -- 待并入下一可见原子的 conceal 标记文本
+  local pending = ""      -- word 之前的 conceal 标记（开始定界符）：prepend 到下一可见原子
+  local pending_after = "" -- word 累积中/之后的 conceal 标记（结束定界符）：append 到该 word 末尾
   local word = nil        -- 累积中的 word 原子文本
   local word_start = 0    -- 当前 word 的起始字节（add 锚点归属判定用）
   local word_end = 0      -- 当前 word 的结束字节（不含）
 
   local function flush_word()
     if word then
-      atoms[#atoms + 1] = { text = pending .. word, width = width_fn(word) + add_in(adds, word_start, word_end), class = "word" }
+      atoms[#atoms + 1] = { text = pending .. word .. pending_after, width = width_fn(word) + add_in(adds, word_start, word_end), class = "word" }
       pending = ""
+      pending_after = ""
       word = nil
     end
   end
@@ -236,8 +238,13 @@ function M.atomize(str, opts)
         pending = ""
         b = b + clen
       elseif byte_concealed(hidden, b) then
-        -- 隐藏标记：并入 pending（0 宽），随后并入下一可见原子文本
-        pending = pending .. ch
+        -- 隐藏标记（0 宽）：word 累积中时它跟在 word 后（结束定界符）→ pending_after，
+        -- 否则它在下一可见原子前（开始定界符）→ pending。
+        if word then
+          pending_after = pending_after .. ch
+        else
+          pending = pending .. ch
+        end
         b = b + clen
       else
         -- 普通文本：先试 shortcode / bare citation 正则（plain 区域）
