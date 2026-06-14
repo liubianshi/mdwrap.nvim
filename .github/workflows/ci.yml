@@ -15,7 +15,7 @@ jobs:
     name: pure-lua (unit + no-vim smoke + luacheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install LuaJIT + luarocks + luacheck
         run: |
@@ -43,7 +43,7 @@ jobs:
     name: editor (golden + invariants + typecheck)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Neovim (stable)
         uses: rhysd/action-setup-vim@v1
