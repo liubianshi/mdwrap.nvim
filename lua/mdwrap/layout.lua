@@ -188,10 +188,11 @@ function M.wrap(atoms, opts)
   local bracket_as_unit = opts.bracket_as_unit or false
   local width_fn = opts.width_fn or function(s) return #s end
 
-  -- 短行容忍度（4.3.4），以配置 width 为基准
+  -- 短行容忍度（4.3.4），以配置 width 为基准。
+  -- 句级标点（sentence）不再设短行下限：行尾力求落在句末，「一句一行」优先于填满（见 DECISIONS）。
+  -- 次级（clause，逗号）仍保留 allow_c 下限，避免逗号断点把行切得过短。
   local headroom = width - 20
   if headroom < 0 then headroom = 0 end
-  local allow_s = math.min(60, headroom)
   local allow_c = math.min(12, headroom)
 
   -- 1) 原子 → token + gap 元信息。
@@ -374,7 +375,7 @@ function M.wrap(atoms, opts)
         if after_breakable(tt) then
           if zwsp_after[tt] then zbest = tt end -- 取拟合区内最远的 ZWSP 断点
           local lv = level_of(tt)
-          if lv == "sentence" and cum[tt] >= avail - allow_s then sent = tt end
+          if lv == "sentence" then sent = tt end -- 句末对齐：拟合区内任意句级标点皆可断，取最远
           if lv == "clause" and cum[tt] >= avail - allow_c then clause = tt end
         end
       end

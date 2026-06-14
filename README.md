@@ -65,7 +65,8 @@ use({ "your/mdwrap.nvim", config = function() require("mdwrap").setup({}) end })
 ## 用法
 
 - **`gq` 系列**：插件对 `markdown`／`quarto`／`pandoc`／`rmd` filetype 设置 `formatexpr`，
-  于是 `gqip`（格式化段落）、`gqq`、可视选区 `gq` 等都按本插件逻辑折行。
+  `gqip`（格式化段落）、可视选区 `gq` 按本插件逻辑整段折行；
+  `gqq`（多行段落中的单行）回退 Neovim 默认行为（只折当前行，不波及整段）。
 - **`:MdwrapFormat`**：格式化整个 buffer；`:'<,'>MdwrapFormat` 格式化选区。
 - **脚本／批处理**：`require("mdwrap").format_buffer(bufnr, opts)`。
 - **lines 进／出**：`require("mdwrap").format_lines(lines, opts)`——接收并返回 `string[]`，

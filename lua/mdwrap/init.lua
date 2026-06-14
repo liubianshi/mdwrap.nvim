@@ -242,10 +242,21 @@ function M.format_lines(lines, opts)
 end
 
 --- formatexpr 契约：插入模式回退（返回 1）；正常模式按 v:lnum/v:count 限定范围处理。
+--- gqq（count≤1）落在多行 wrap 块内时回退 Neovim 默认（只折当前行，不扩到整块）——
+--- 偏离 design §146「处理单位永远是完整块」，用户裁定（见 DECISIONS）。gqip／可视 gq
+--- （count>1）与单行块仍走 mdwrap 整块逻辑。
 function M.formatexpr()
   if vim.fn.mode():match("[iR]") or vim.v.char ~= "" then return 1 end
   local lnum = vim.v.lnum - 1
   local cnt = vim.v.count
+  if cnt <= 1 then
+    for _, b in ipairs(blocks.split(0)) do
+      if b.srow <= lnum and b.erow >= lnum then
+        if b.action == "wrap" and b.erow > b.srow then return 1 end
+        break
+      end
+    end
+  end
   local rend = (cnt > 0) and (lnum + cnt - 1) or lnum
   M.format_buffer(0, { row_start = lnum, row_end = rend })
   return 0

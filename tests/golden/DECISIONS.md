@@ -236,3 +236,25 @@
   覆盖；新增 `34-overflow-nopunct` 覆盖溢出行为。**这是为适配修订后的用户需求,经候选确认后改,
   非为过测试擅改 expected。**
 
+# 句末对齐断行（句级标点无短行下限）+ 全角句末标点分类修复
+
+- **背景**：用户裁定「尽量一句一行」——句级标点(`。；：！？．`)断行应压倒填满,行尾力求落在句末,
+  即使行较短。
+- **裁定（B：句末对齐、可含多句）**：`wrap_sentence=false` 下,句级断点**取消短行下限**(去掉
+  `allow_s`),取拟合区内**最远**的句级标点;一行可含多个短分句,但行尾必落句级标点,绝不跨句填到
+  次级(逗号/顿号)或溢出。次级 `clause` 仍保留 `allow_c` 下限。
+- **潜伏缺陷修复**：全角 `；：！？．`(`0xFF1B/0xFF1A/0xFF01/0xFF1F/0xFF0E`)原本**只在 `sentence_sep`
+  (断行偏好)、却不在 `forbit_break_before`(字符分类)**,被 `char_attr` 当成普通 CJK → atom class=cjk。
+  于是严格模式下 `gap_breakable`(认 atom class)不把它们当标点断点,`level_of`(认 sentence_sep)虽判
+  sentence 却因 `after_breakable` 为假而记不上 `sent`。旧「字间断兜底」碰巧掩盖,改溢出后暴露。
+  **修复:把这 5 个码点补进 `forbit_break_before`**(句末标点绝不落行首,本就该在此表)。
+  教训:标点须同时进 `sentence_sep`/`clause_sep`(偏好)与 `forbit_break_*`(分类)两套表才完整生效。
+
+# gqq 回退 Neovim 默认（偏离 design §146）
+
+- **背景**：design §146 规定 `gqq`/`gqip`/可视 `gq` 都「扩展到完整块」。用户裁定 `gqq` 应走 Neovim
+  默认(只折当前行,不波及整段)。
+- **实测依据**：`formatexpr` 下 `gqq` → `v:count==1`;`gqip`(多行段落)→ `count>1`;可视/`gqj` → `count>1`。
+- **裁定**：`formatexpr` 中 `count<=1` 且当前行落在**多行 wrap 块**内 → `return 1` 回退默认。
+  `gqip`/可视 `gq`(count>1)与单行块仍走 mdwrap 整块——单行块下 `gqq`/`gqip` 等价,折单行段落正确。
+
