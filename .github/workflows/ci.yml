@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支上未跑完的旧 CI 自动取消
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pure-lua:
+    name: pure-lua (unit + no-vim smoke + luacheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LuaJIT + luarocks + luacheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit luarocks
+          sudo luarocks install luacheck
+
+      - name: Unit tests (pure Lua, no Neovim)
+        run: tests/run_unit.sh
+
+      - name: Pure-module no-vim smoke (Lua 5.1)
+        # 守护硬约束：chardata/layout/spacing 必须在裸 luajit 下独立加载（不得 require vim）。
+        run: |
+          set -e
+          for mod in chardata layout spacing; do
+            luajit -e "package.path='./lua/?.lua;'..package.path; require('mdwrap.$mod')" \
+              && echo "ok: mdwrap.$mod" \
+              || { echo "FAIL: mdwrap.$mod broke the no-vim/5.1 constraint"; exit 1; }
+          done
+
+      - name: luacheck
+        run: luacheck lua/
+
+  editor:
+    name: editor (golden + invariants + typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim (stable)
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Install LuaJIT + pandoc
+        # luajit 供 run_typecheck.sh 的 no-vim 冒烟；pandoc 供 golden 不变量③（缺则自动跳过）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit pandoc
+
+      - name: Install nvim-treesitter + markdown parsers
+        # 装到 site/pack/*/start，既被 Neovim 默认 packpath 自动加载（供 TSInstallSync），
+        # 也被 tests/minimal_init.lua 的 pack/*/start 探测重新 append 进 --clean 的 rtp。
+        run: |
+          NVIM_TS="$HOME/.local/share/nvim/site/pack/test/start/nvim-treesitter"
+          git clone --depth 1 --branch master \
+            https://github.com/nvim-treesitter/nvim-treesitter "$NVIM_TS"
+          nvim --headless \
+            -c "runtime! plugin/nvim-treesitter.lua" \
+            -c "TSInstallSync markdown markdown_inline" \
+            -c "qa!"
+
+      - name: Golden tests + 3 invariants
+        run: tests/run_golden.sh
+
+      - name: Install lua-language-server
+        run: |
+          LLS_URL=$(curl -fsSL https://api.github.com/repos/LuaLS/lua-language-server/releases/latest \
+            | grep -o 'https://[^"]*linux-x64\.tar\.gz' | head -1)
+          test -n "$LLS_URL"
+          mkdir -p "$HOME/lls"
+          curl -fsSL "$LLS_URL" | tar xz -C "$HOME/lls"
+          echo "$HOME/lls/bin" >> "$GITHUB_PATH"
+
+      - name: Type check (lua-language-server, injects real VIMRUNTIME)
+        run: tests/run_typecheck.sh
