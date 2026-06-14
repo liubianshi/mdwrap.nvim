@@ -273,6 +273,9 @@ function M.wrap(atoms, opts)
       if lc == "." and chardata.is_abbrev(txt) then return "normal" end
       return "sentence"
     end
+    -- 顿号「、」是并列词语连接符，非子句边界，低于逗号一级：不享受 clause 短行容忍，
+    -- 仅在贪心填满到它时才断（严格模式下它仍是合法标点断点）。
+    if cp == 0x3001 then return "normal" end
     if cp and chardata.clause_sep[cp] then return "clause" end
     return "normal"
   end
