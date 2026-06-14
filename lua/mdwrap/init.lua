@@ -154,6 +154,7 @@ local function process_wrap(b, opts, width, conceal, ctx)
     prefix_rest = b.prefix_rest,
     wrap_sentence = opts.wrap_sentence,
     cjk_break_at_punct_only = opts.cjk_break_at_punct_only,
+    bracket_as_unit = opts.bracket_as_unit,
     width_fn = width_fn,
   }
   -- 前缀渲染占宽 = 字面宽 + 净增量。首行取 k==1；续行取首个有前缀 mark 的续行（渲染一致，互为代表）。

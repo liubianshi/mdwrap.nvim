@@ -185,6 +185,7 @@ function M.wrap(atoms, opts)
   local prefix_rest = opts.prefix_rest or ""
   local wrap_sentence = opts.wrap_sentence or false
   local punct_only = opts.cjk_break_at_punct_only or false
+  local bracket_as_unit = opts.bracket_as_unit or false
   local width_fn = opts.width_fn or function(s) return #s end
 
   -- 短行容忍度（4.3.4），以配置 width 为基准
@@ -226,6 +227,38 @@ function M.wrap(atoms, opts)
 
   local function gmeta(k) return gap[k] or { space = false } end
 
+  -- 括号配对作整体（bracket_as_unit）：用栈匹配配对括号；组宽 ≤ 续行整行可用宽时，锁定组内
+  -- 所有间隙（不在括号内部断），宁可整组移到下一行（组前 `（` 之「前」仍可断）；组宽超一行才
+  -- 回退内部断。半角括号紧贴内容时落在 word 原子首/尾字符，故按 token 文本首/末字符判定。
+  local locked_gap = {}
+  if bracket_as_unit then
+    local avail_full = width - (opts.prefix_rest_width or width_fn(prefix_rest))
+    if avail_full < 1 then avail_full = 1 end
+    local stack = {}
+    for idx = 1, m do
+      local txt = tokens[idx].text
+      local fcp = utf8_cp(first_char(txt))
+      local lcp = utf8_cp(last_char(txt))
+      if fcp and chardata.bracket_open[fcp] then
+        stack[#stack + 1] = { idx = idx, close = chardata.bracket_open[fcp] }
+      end
+      if lcp and #stack > 0 and stack[#stack].close == lcp then
+        local g = stack[#stack]
+        stack[#stack] = nil
+        if idx > g.idx then -- 组内至少有一个间隙才需锁
+          local gw = 0
+          for t = g.idx, idx do
+            gw = gw + tokens[t].width
+            if t > g.idx and gmeta(t).space then gw = gw + 1 end
+          end
+          if gw <= avail_full then
+            for k = g.idx + 1, idx do locked_gap[k] = true end
+          end
+        end
+      end
+    end
+  end
+
   -- 宽字符类（参与 CJK 式断行）：CJK 表意文字与全角标点皆属之。
   local function is_wide_class(a)
     local c = a.class
@@ -246,8 +279,9 @@ function M.wrap(atoms, opts)
 
   -- token k 之「前」的间隙是否可断（k>=2）
   local function gap_breakable(k)
+    if zwsp_after[k - 1] then return true end -- ZWSP 优先断点（高于禁则与括号锁定，用户手工标记）
+    if locked_gap[k] then return false end    -- 括号组内部：整组作单元，不在内部断
     if gmeta(k).space then return true end
-    if zwsp_after[k - 1] then return true end -- ZWSP 优先断点（高于禁则，用户手工标记）
     local a, b = tokens[k - 1], tokens[k]
     if not can_break_after(a) then return false end
     if not can_break_before(b) then return false end

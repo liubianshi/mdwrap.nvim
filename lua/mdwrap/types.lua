@@ -36,6 +36,7 @@
 ---@field lang "zh"
 ---@field cjk_english_spacing boolean
 ---@field cjk_break_at_punct_only boolean  -- true 时中文仅在标点处断行（无标点超长子句字间断兜底）；false 退回传统 CJK 字间可断
+---@field bracket_as_unit boolean  -- true 时括号配对作整体（能整组放下就不在括号内部断行；整组宽超一行才回退内部断）
 ---@field respect_conceallevel boolean
 ---@field respect_extmark_conceal boolean  -- false 时不读持久 conceal extmark（render-markdown/markview 等渲染插件的宽度增量）
 ---@field notify_on_error_node boolean
@@ -57,6 +58,7 @@
 ---@field prefix_rest_width? integer   -- 同上，续行前缀占宽
 ---@field wrap_sentence? boolean
 ---@field cjk_break_at_punct_only? boolean  -- 见 mdwrap.Config 同名字段；缺省（nil）按 false 处理（传统字间可断）
+---@field bracket_as_unit? boolean  -- 见 mdwrap.Config 同名字段；缺省（nil）按 false 处理（不锁括号组）
 ---@field width_fn? mdwrap.WidthFn
 
 --- 已翻译到逻辑串字节坐标的持久 extmark conceal 覆盖项（render-markdown/markview 等渲染插件注入）。

@@ -100,6 +100,20 @@ M.half_break_before = {
   ["?"] = true, ["]"] = true, [")"] = true, ["}"] = true,
 }
 
+-- 配对定界符（括号）：open 码点 → close 码点。供 layout「括号作整体」组识别。
+-- 仅括号，不含引号「」『』（用户裁定）。半角括号紧贴内容时落在 word 原子的首/尾字符。
+---@type table<integer, integer>
+M.bracket_open = {
+  [0xff08] = 0xff09, -- （）Fullwidth parenthesis
+  [0x300a] = 0x300b, -- 《》Double angle bracket
+  [0x3010] = 0x3011, -- 【】Black lenticular bracket
+  [0x3014] = 0x3015, -- 〔〕Tortoise shell bracket
+  [0x3008] = 0x3009, -- 〈〉Angle bracket
+  [0x0028] = 0x0029, -- () Parenthesis
+  [0x005b] = 0x005d, -- [] Square bracket
+  [0x007b] = 0x007d, -- {} Curly bracket
+}
+
 -- 英文缩写集（小写、去尾点形式）：token 以半角 `.` 结尾时查此表，命中则**不**算句末，
 -- 避免 Dr./e.g./U.S. 等被误判为句子边界。`is_abbrev` 另把「单个 ASCII 字母」（首字母
 -- 缩写 A./U.）也视作缩写。集合刻意小而常见——真句末若恰好撞上 etc.，宁可少断一处，也好过
