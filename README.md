@@ -54,7 +54,7 @@
 
 ```lua
 {
-  "your/mdwrap.nvim",
+  "liubianshi/mdwrap.nvim",
   ft = { "markdown", "quarto", "pandoc", "rmd" },
   opts = {},   -- 见下方配置
 }
@@ -63,7 +63,7 @@
 [packer.nvim](https://github.com/wbthomason/packer.nvim)：
 
 ```lua
-use({ "your/mdwrap.nvim", config = function() require("mdwrap").setup({}) end })
+use({ "liubianshi/mdwrap.nvim", config = function() require("mdwrap").setup({}) end })
 ```
 
 ## 用法
