@@ -241,6 +241,26 @@ function M.format_lines(lines, opts)
   return out
 end
 
+--- 直接格式化磁盘上的 markdown 文件（命令行 / 批处理，无需打开 buffer）。
+--- 走 lines 进出路径：命令行下没有渲染插件，extmark conceal（长链接塌缩、`$` 等）按字面宽
+--- 计入（既定行为）；tree-sitter conceal（`**`、反引号）在 rtp 含 markdown_inline 的
+--- highlights 查询时仍生效（装了 nvim-treesitter 即有）。保留文件原有的末尾换行与否。
+---@param path string
+---@param opts mdwrap.FormatOpts?  覆盖配置（width / wrap_sentence 等）
+function M.format_file(path, opts)
+  local fh = assert(io.open(path, "r"), "mdwrap: 无法读取文件 " .. path)
+  local content = fh:read("*a") or ""
+  fh:close()
+  local trailing_nl = content:sub(-1) == "\n"
+  local lines = vim.split(content, "\n", { plain = true })
+  if trailing_nl then table.remove(lines) end -- vim.split 在末尾换行后会多出一个空串
+  local out = M.format_lines(lines, opts)
+  local wh = assert(io.open(path, "w"), "mdwrap: 无法写入文件 " .. path)
+  wh:write(table.concat(out, "\n"))
+  if trailing_nl then wh:write("\n") end
+  wh:close()
+end
+
 --- formatexpr 契约：插入模式回退（返回 1）；正常模式按 v:lnum/v:count 限定范围处理。
 --- gqq（count≤1）落在多行 wrap 块内时回退 Neovim 默认（只折当前行，不扩到整块）——
 --- 偏离 design §146「处理单位永远是完整块」，用户裁定（见 DECISIONS）。gqip／可视 gq

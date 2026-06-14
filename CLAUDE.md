@@ -4,8 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This is a Neovim plugin project that is **not yet implemented**. The repo currently holds only the
-design document; code is to be built out against it incrementally.
+The plugin is **implemented and working** (milestones M0–M5 done): conceal-aware wrapping, Chinese
+kinsoku, sentence-preferred breaking, bracket-as-unit, pangu spacing, the `formatexpr` / `:MdwrapFormat`
+entry points plus the `format_buffer` / `format_lines` / `format_file` APIs and conform.nvim
+integration are all in place, with 34 golden cases and the three invariants green. The project is
+**still early and changes substantially and often** — work now is incremental refinement, and it is
+written primarily by Claude Code.
 
 **`mdwrap-nvim-design.md` is the authoritative spec**, not advisory notes. Read it in full before any
 implementation work. This file only adds the facts the design doc leaves implicit and the hard
@@ -90,7 +94,7 @@ honors `ambiwidth`; do not recompute East Asian width yourself. See design doc 4
 - The implementation order M0→M4 is in design doc Section 7; at the end of each milestone, report
   pass/fail case lists and any deviation from the spec.
 
-## Test commands (will exist once implemented)
+## Test commands
 
 ```bash
 tests/run_unit.sh      # Pure-Lua unit tests (busted if available, else minimal asserts); covers layout/spacing/chardata
@@ -127,6 +131,15 @@ Three invariants run automatically over **all** golden inputs (design doc 6.2):
 - The layout layer must not `require` any `vim.*`.
 - **Do not edit golden `expected` files to make tests pass**; if a change is genuinely needed, stop and
   explain it to the user.
+
+## Versioning and changelog
+
+Versioning is **CHANGELOG-driven plus git tags**. Record every notable change under the `[Unreleased]`
+section of `CHANGELOG.md` (Keep a Changelog format). SemVer 0.x rules apply: while in 0.x, breaking
+changes bump the **minor**, fixes bump the **patch**; back-compat is only promised from 1.0.0 on. On
+release, cut `[Unreleased]` into a `[x.y.z] - DATE` section and tag it (`git tag -a v0.1.0 -m "..."`).
+There is **no version string in the Lua code** — the changelog plus git tags are the single source of
+truth. Do not bump versions or create/push tags unless the user asks.
 
 ## Markdown style for docs/comments
 

@@ -1,36 +1,39 @@
 # mdwrap.nvim
 
-为 Pandoc／Quarto 方言的中文 Markdown 提供 **conceal 感知的硬折行**的 Neovim 插件。
+为 Pandoc、Quarto 方言的中文 Markdown 提供 **conceal 感知的硬折行**的 Neovim 插件。
 
 它按 Neovim **实际显示的宽度**折行（扣除被 conceal 隐藏的部分，如 `**`、行内代码反引号、
-链接 URL 等），使文本在视觉上对齐；并实现中文排版规则：禁则处理（标点不落行首／行尾）、
-句末优先断行、合并行时中文字符间不引入空格、以及可选的中英文之间盘古空格。
+链接 URL 等），使文本在视觉上对齐；并实现中文排版规则：禁则处理（标点不落行首、行尾），
+句末优先断行，合并行时中文字符间不引入空格，以及可选的中英文之间盘古空格。
 
 入口为 `formatexpr`（`gq` 系列）与 `:MdwrapFormat` 命令。本插件是 Perl 工具
 [mdwrap](https://github.com/) 的 Neovim 重写，只迁移领域知识，不沿用其架构。
+
+> **项目状态**：本项目主要由 [Claude Code](https://www.anthropic.com/claude-code) 编写，目前处于
+> 早期阶段，接口与折行行为会经常大幅调整；变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 特性
 
 - **conceal 感知折行**：宽度来自 `markdown_inline` 高亮查询的 conceal 元数据，与编辑器实际显示一致。
 - **插件无关的外部渲染感知**：除 tree-sitter conceal 外，还读 buffer 上的**持久 conceal extmark**
-  （隐藏标记）与 **inline `virt_text`**（插图标），故 [render-markdown.nvim](https://github.com/MeanderingProgrammer/render-markdown.nvim)
-  / [markview.nvim](https://github.com/OXY2DEV/markview.nvim) 等把长链接塌成图标、把 `$`/`**` 隐藏时，
+  （隐藏标记）与 **inline `virt_text`**（插图标），故 [render-markdown.nvim](https://github.com/MeanderingProgrammer/render-markdown.nvim)、
+  [markview.nvim](https://github.com/OXY2DEV/markview.nvim) 等把长链接塌成图标，把 `$`、`**` 隐藏时，
   折行仍与屏幕对齐。读所有 namespace 自动过滤，不绑定具体插件；可用 `respect_extmark_conceal` 关闭。
 - **中文禁则**：`。，」』）》】` 等绝不落行首（溢出回收到上一行）；`「『（《【` 等绝不落行尾（推到下一行）。
 - **中文只在标点断**：默认中文仅在标点处换行，不在普通汉字之间断。无标点的超长子句：
-  句末优先模式（默认 `wrap_sentence = false`）整段溢出、绝不在非标点处断；按宽填满模式
-  （`wrap_sentence = true`）才退化为字间断兜底。链接/引用/数学等不可分原子的边界恒可断（合理换行）。
+  句末优先模式（默认 `wrap_sentence = false`）整段溢出，绝不在非标点处断；按宽填满模式
+  （`wrap_sentence = true`）才退化为字间断兜底。链接、引用、数学等不可分原子的边界恒可断（合理换行）。
   可用 `cjk_break_at_punct_only = false` 退回传统逐字可断。
-- **括号作整体**：配对括号（中英文 `（）`／`()`／`【】`／`《》` 等）能整组放进一行时，
+- **括号作整体**：配对括号（中英文 `（）`、`()`、`【】`、`《》` 等）能整组放进一行时，
   宁可整组移到下一行也不在括号内部断；只有整组比一整行还宽才回退内部断。
   可用 `bracket_as_unit = false` 关闭。
 - **句末优先断行**：宁可行短一些，也让行尾落在句号、分号等强标点上（可用 `wrap_sentence` 关闭）。
-  中英文一视同仁——半角 `. : ; ! ?` 与全角 `。：；！？` 同为句级断点，`,`／`，`／`、` 为子句级
-  最后手段；英文另带缩写保护（`Dr.`／`e.g.`／`U.S.` 等不误判为句末）。
-- **行合并无痕**：重折前合并原有软换行，中文行之间无空格、英文行之间恰一个空格。
-- **结构识别**：YAML／代码块／数学块／表格／标题／链接引用定义不折行；列表悬挂缩进；
+  中英文一视同仁——半角 `. : ; ! ?` 与全角 `。：；！？` 同为句级断点，`,`、`，`、`、` 为子句级
+  最后手段；英文另带缩写保护（`Dr.`、`e.g.`、`U.S.` 等不误判为句末）。
+- **行合并无痕**：重折前合并原有软换行，中文行之间无空格，英文行之间恰一个空格。
+- **结构识别**：YAML、代码块、数学块、表格、标题、链接引用定义不折行；列表悬挂缩进；
   嵌套引用前缀；callout 标题独立；`:::` 围栏 div；citation 与 shortcode 作为不可断原子。
-- **盘古之白**：CJK 与拉丁字母／数字之间、CJK 与行内代码之间插入半角空格（可关闭）。
+- **盘古之白**：CJK 与拉丁字母、数字之间，CJK 与行内代码之间插入半角空格（可关闭）。
 - **幂等**：格式化两次与一次结果相同。
 - **最小差异**：只改动目标块内的换行与空白，块外字节不变。
 
@@ -40,9 +43,9 @@
 - 已安装 `markdown` 与 `markdown_inline` parser。
 - 建议安装 [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter)，
   以提供 `markdown_inline` 的 `highlights` 查询（conceal 宽度的来源）。
-- 行内数学 `$…$` 的 `$` 定界符、链接 URL、列表/引用前缀图标等**渲染插件特有的 conceal**，
+- 行内数学 `$…$` 的 `$` 定界符、链接 URL、列表、引用前缀图标等**渲染插件特有的 conceal**，
   通过读 buffer 上的持久 extmark 自动感知（插件无关，见上「外部渲染感知」）。未装渲染插件时
-  这些字符按字面宽计入——`conceallevel=0` 或无渲染 extmark 即此情形，行为确定、零依赖。
+  这些字符按字面宽计入——`conceallevel=0` 或无渲染 extmark 即此情形，行为确定，零依赖。
 
 ## 安装
 
@@ -64,15 +67,40 @@ use({ "your/mdwrap.nvim", config = function() require("mdwrap").setup({}) end })
 
 ## 用法
 
-- **`gq` 系列**：插件对 `markdown`／`quarto`／`pandoc`／`rmd` filetype 设置 `formatexpr`，
+- **`gq` 系列**：插件对 `markdown`、`quarto`、`pandoc`、`rmd` filetype 设置 `formatexpr`，
   `gqip`（格式化段落）、可视选区 `gq` 按本插件逻辑整段折行；
   `gqq`（多行段落中的单行）回退 Neovim 默认行为（只折当前行，不波及整段）。
 - **`:MdwrapFormat`**：格式化整个 buffer；`:'<,'>MdwrapFormat` 格式化选区。
-- **脚本／批处理**：`require("mdwrap").format_buffer(bufnr, opts)`。
-- **lines 进／出**：`require("mdwrap").format_lines(lines, opts)`——接收并返回 `string[]`，
+- **脚本、批处理**：`require("mdwrap").format_buffer(bufnr, opts)`。
+- **lines 进、出**：`require("mdwrap").format_lines(lines, opts)`——接收并返回 `string[]`，
   `opts` 含 `bufnr`（取窗口 `conceallevel` 等环境量）与 `range`；供 conform.nvim 等格式化编排器调用。
 
 折行宽度取值顺序：显式配置 `width` ＞ buffer 的 `textwidth`（非 0）＞ 默认 80。
+
+## 命令行格式化
+
+不打开编辑器也能直接格式化磁盘上的 Markdown 文件，适合脚本与批处理。`format_file` 走与 conform
+集成相同的 lines 进出路径，无需先打开 buffer：
+
+```bash
+# 就地格式化单个文件
+nvim --headless -c "lua require('mdwrap').format_file('doc.md')" -c "qa!"
+
+# 批量（文件参数列表）
+nvim --headless doc1.md doc2.md \
+  -c "lua for _, f in ipairs(vim.fn.argv()) do require('mdwrap').format_file(f) end" -c "qa!"
+
+# 覆盖配置（如指定宽度）
+nvim --headless -c "lua require('mdwrap').format_file('doc.md', { width = 100 })" -c "qa!"
+```
+
+说明：
+
+- 命令行下没有渲染插件，extmark conceal（长链接塌缩、`$` 等）按字面宽计入，这是既定行为。
+- tree-sitter conceal（`**`、行内代码反引号）在 runtimepath 含 `markdown_inline` 的 `highlights`
+  查询时仍生效——装了 nvim-treesitter 即有；用 `--clean` 则完全脱离用户配置，退化为纯字面宽。
+- `format_file(path, opts)` 的 `opts` 同 `setup`（`width`、`wrap_sentence` 等可覆盖），
+  并保留文件原有的末尾换行与否。
 
 ## 配置
 
@@ -96,7 +124,7 @@ require("mdwrap").setup({
 
 [conform.nvim](https://github.com/stevearc/conform.nvim) 的 formatter 支持**进程内 Lua 形态**
 （`format = function(self, ctx, lines, callback)`，与外部 `command` 互斥），且 `ctx` 携带活 bufnr。
-因此 mdwrap 可作为**一等 Lua formatter**接入——不经 stdin／stdout 外部进程，直接在编辑器内拿到
+因此 mdwrap 可作为**一等 Lua formatter**接入——不经 stdin、stdout 外部进程，直接在编辑器内拿到
 tree-sitter 树与窗口 conceal，conceal 感知折行的能力完整保留：
 
 ```lua
@@ -120,7 +148,7 @@ require("conform").setup({
 ```
 
 `formatexpr` 与 conform 可**共存**：`gq` 系列仍走 mdwrap 的 `formatexpr` 手动折行，conform 负责
-format-on-save／`:Format` 编排。若想让 conform 单独接管、把 `gq` 让回 Neovim 默认行为，
+format-on-save、`:Format` 编排。若想让 conform 单独接管，把 `gq` 让回 Neovim 默认行为，
 设 `set_formatexpr = false`（见上方配置）。
 
 > 注意：conform 串接多个 formatter 时在内存里逐棒传递 `lines`，**中途不回写 buffer**。当 mdwrap
@@ -139,7 +167,7 @@ format-on-save／`:Format` 编排。若想让 conform 单独接管、把 `gq` �
 
 ## 架构
 
-三层分离（解析 / 布局 / 依赖注入）：
+三层分离（解析、布局、依赖注入）：
 
 - `blocks.lua` — tree-sitter 块级切分与前缀计算。
 - `atoms.lua` — 行内树 → 原子列表（不可再分单元 + 视觉宽度）；conceal 宽度来自高亮查询。
@@ -148,18 +176,18 @@ format-on-save／`:Format` 编排。若想让 conform 单独接管、把 `gq` �
 - `chardata.lua` — 字符分类码点表（**纯函数**，移植自 Perl 版）。
 - `init.lua` — 编辑器集成与 `formatexpr` 入口。
 
-`layout.lua`／`spacing.lua`／`chardata.lua` 可在无 Neovim 的纯 Lua（luajit／lua5.1）下加载与测试；
+`layout.lua`、`spacing.lua`、`chardata.lua` 可在无 Neovim 的纯 Lua（luajit、lua5.1）下加载与测试；
 布局层通过 `width_fn` 参数接收宽度函数（生产注入 `strdisplaywidth` + conceal，测试注入查表 stub）。
 
 ### 类型系统
 
-全部领域类型（`mdwrap.Atom`／`mdwrap.Block`／`mdwrap.Config`／`mdwrap.WidthFn` 与各 `*Opts`）以
+全部领域类型（`mdwrap.Atom`、`mdwrap.Block`、`mdwrap.Config`、`mdwrap.WidthFn` 与各 `*Opts`）以
 LuaCATS 注解集中声明于 `lua/mdwrap/types.lua`——一个**运行时从不被 `require`** 的 meta 文件：
 lua-language-server 按名字在整个工作区解析 `---@class`，与 `require` 无关，因此纯模块只在注释里按名字
 引用这些类型，不破坏「禁止 `require` 任何 `vim.*`」的硬约束。仓库根的 `.luarc.json` 把
 `runtime.version` 钉为 `Lua 5.1`（对三纯模块的 5.2+ 用法机器化报警），并用 `diagnostics.globals`
 静默 `vim`。编辑器侧建议安装
-[lazydev.nvim](https://github.com/folke/lazydev.nvim) 以获得完整的 `vim`／tree-sitter 类型。
+[lazydev.nvim](https://github.com/folke/lazydev.nvim) 以获得完整的 `vim`、tree-sitter 类型。
 
 ## 测试
 
