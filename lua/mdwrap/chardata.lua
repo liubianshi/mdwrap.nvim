@@ -73,7 +73,6 @@ M.forbit_break_before = {
 ---@type table<integer, boolean>
 M.sentence_sep = {
   [0x3002] = true, -- 。
-  [0xff1a] = true, -- ：
   [0xff0e] = true, -- ．
   [0xff1b] = true, -- ；
   [0xff01] = true, -- ！
@@ -81,10 +80,18 @@ M.sentence_sep = {
   -- 半角终止符（语言无关：英文句末/子句末优先断行，与全角并列）。
   -- `.` 触发时另走缩写保护（见 is_abbrev），避免 Dr./e.g. 误判。
   [0x2e] = true, -- .
-  [0x3a] = true, -- :
   [0x3b] = true, -- ;
   [0x21] = true, -- !
   [0x3f] = true, -- ?
+}
+
+-- 冒号级分隔符集（介于 sentence 与 clause 之间的中间级）。用户裁定：`：` 不等同于句号/
+-- 分号/叹号——句末优先模式下行尾应力求落在真正的句末，冒号只在没有句末断点时才作偏好断点，
+-- 但仍高于逗号一级（见 layout.wrap 的断点优先级 sentence ＞ colon ＞ clause）。
+---@type table<integer, boolean>
+M.colon_sep = {
+  [0xff1a] = true, -- ：Fullwidth colon
+  [0x3a] = true, -- : 半角冒号
 }
 
 -- 次级（子句）分隔符集（触发 clause 级断行偏好）

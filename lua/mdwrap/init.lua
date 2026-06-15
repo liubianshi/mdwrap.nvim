@@ -197,6 +197,22 @@ local function range_to_rows(opts)
   end
 end
 
+--- 构造 apply_blocks 用的 ctx。是否读持久 conceal extmark = conceal 且 respect_extmark_conceal
+--- 且 bufnr 非空。expected_lines 非 nil 时启用失同步保护（lines 路径用：逐行比对，丢弃前序
+--- formatter 改过行的 mark）；buffer 路径不传，buffer 即真相源、坐标天然对齐。
+---@param bufnr integer?
+---@param conceal boolean
+---@param opts mdwrap.Config
+---@param expected_lines string[]?
+---@return table
+local function make_ctx(bufnr, conceal, opts, expected_lines)
+  return {
+    bufnr = bufnr,
+    read_extmark = conceal and (opts.respect_extmark_conceal ~= false) and bufnr ~= nil,
+    expected_lines = expected_lines,
+  }
+end
+
 --- 格式化缓冲区（headless / 命令 / formatexpr 共用）。
 ---@param bufnr integer|nil 0 或 nil 表示当前缓冲区
 ---@param opts mdwrap.FormatOpts? 覆盖配置；可含 row_start/row_end（0-indexed，闭区间）限定范围
@@ -207,8 +223,8 @@ function M.format_buffer(bufnr, opts)
   local bs = blocks.split(bufnr)
   local width = resolve_width(opts, bufnr)
   local conceal = conceal_enabled(opts, bufnr)
-  -- buffer 路径：buffer 即真相源，extmark 坐标与 buffer 行一致，无需失同步保护。
-  local ctx = { bufnr = bufnr, read_extmark = conceal and (opts.respect_extmark_conceal ~= false) }
+  -- buffer 路径：buffer 即真相源，extmark 坐标与 buffer 行一致，无需失同步保护（不传 expected_lines）。
+  local ctx = make_ctx(bufnr, conceal, opts)
   apply_blocks(bs, opts, width, conceal, ctx, function(srow, erow, new)
     vim.api.nvim_buf_set_lines(bufnr, srow, erow + 1, false, new)
   end)
@@ -229,11 +245,7 @@ function M.format_lines(lines, opts)
   local conceal = conceal_enabled(opts, bufnr)
   -- lines 路径（conform 链式）：从内存 lines 解析，但 extmark 在 live buffer 上。
   -- 仅当有 bufnr 时读 extmark，并传 lines 作失同步保护（前序 formatter 改过的行丢弃其 mark）。
-  local ctx = {
-    bufnr = bufnr,
-    read_extmark = conceal and (opts.respect_extmark_conceal ~= false) and bufnr ~= nil,
-    expected_lines = lines,
-  }
+  local ctx = make_ctx(bufnr, conceal, opts, lines)
   apply_blocks(bs, opts, width, conceal, ctx, function(srow, erow, new)
     for _ = srow, erow do table.remove(out, srow + 1) end  -- 删 out[srow+1 .. erow+1]
     for j = #new, 1, -1 do table.insert(out, srow + 1, new[j]) end
@@ -261,10 +273,30 @@ function M.format_file(path, opts)
   wh:close()
 end
 
+--- 只折**单一缓冲区行**（不合并整段），就地回写。供 gqq 落在多行 wrap 块内时用：
+--- 把该行当成自己的单行块（split_lines 取其前缀／悬挂缩进），srow 移到真实行号后跑
+--- process_wrap——既「只折当前行、不波及整段」，又能按真实行号读取该行的 conceal extmark。
+--- 该行解析出来不是 wrap 块（空行 / 看似标题等）时返回 false，调用方回退 Neovim 默认。
+---@param lnum integer 0-indexed 行号
+---@return boolean handled
+local function format_single_line(lnum)
+  local line = vim.api.nvim_buf_get_lines(0, lnum, lnum + 1, false)[1] or ""
+  local sub = blocks.split_lines({ line })
+  if #sub ~= 1 or sub[1].action ~= "wrap" then return false end
+  local b = sub[1]
+  b.srow, b.erow = lnum, lnum -- 移到真实行：extmark 按真实缓冲区行读取
+  local width = resolve_width(M.options, 0)
+  local conceal = conceal_enabled(M.options, 0)
+  local ctx = make_ctx(0, conceal, M.options)
+  vim.api.nvim_buf_set_lines(0, lnum, lnum + 1, false, process_wrap(b, M.options, width, conceal, ctx))
+  return true
+end
+
 --- formatexpr 契约：插入模式回退（返回 1）；正常模式按 v:lnum/v:count 限定范围处理。
---- gqq（count≤1）落在多行 wrap 块内时回退 Neovim 默认（只折当前行，不扩到整块）——
---- 偏离 design §146「处理单位永远是完整块」，用户裁定（见 DECISIONS）。gqip／可视 gq
---- （count>1）与单行块仍走 mdwrap 整块逻辑。
+--- gqq（count≤1）落在多行 wrap 块内时**只折当前行**（不扩到整块）——偏离 design §146
+--- 「处理单位永远是完整块」，用户裁定（见 DECISIONS）。原先此处回退 Neovim 默认，但其折行
+--- 引擎不在 CJK 间断行（对中文等于不折），故改为用 mdwrap 单行折行。gqip／可视 gq（count>1）
+--- 与单行块仍走 mdwrap 整块逻辑。
 function M.formatexpr()
   if vim.fn.mode():match("[iR]") or vim.v.char ~= "" then return 1 end
   local lnum = vim.v.lnum - 1
@@ -272,7 +304,9 @@ function M.formatexpr()
   if cnt <= 1 then
     for _, b in ipairs(blocks.split(0)) do
       if b.srow <= lnum and b.erow >= lnum then
-        if b.action == "wrap" and b.erow > b.srow then return 1 end
+        if b.action == "wrap" and b.erow > b.srow then
+          return format_single_line(lnum) and 0 or 1
+        end
         break
       end
     end

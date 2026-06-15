@@ -189,8 +189,8 @@ function M.wrap(atoms, opts)
   local width_fn = opts.width_fn or function(s) return #s end
 
   -- 短行容忍度（4.3.4），以配置 width 为基准。
-  -- 句级标点（sentence）不再设短行下限：行尾力求落在句末，「一句一行」优先于填满（见 DECISIONS）。
-  -- 次级（clause，逗号）仍保留 allow_c 下限，避免逗号断点把行切得过短。
+  -- 句级标点（sentence）不设短行下限：行尾力求落在句末，「一句一行」优先于填满（见 DECISIONS）。
+  -- 冒号（colon）与逗号（clause）保留 allow_c 下限，避免断点靠行首时把行切得过短。
   local headroom = width - 20
   if headroom < 0 then headroom = 0 end
   local allow_c = math.min(12, headroom)
@@ -311,6 +311,9 @@ function M.wrap(atoms, opts)
       if lc == "." and chardata.is_abbrev(txt) then return "normal" end
       return "sentence"
     end
+    -- 冒号「：」介于句末与逗号之间：句末优先模式下，仅在拟合区内无句末断点时才作偏好断点，
+    -- 但仍高于逗号一级（用户裁定：冒号不等同于句号/分号/叹号）。
+    if cp and chardata.colon_sep[cp] then return "colon" end
     -- 顿号「、」是并列词语连接符，非子句边界，低于逗号一级：不享受 clause 短行容忍，
     -- 仅在贪心填满到它时才断（严格模式下它仍是合法标点断点）。
     if cp == 0x3001 then return "normal" end
@@ -369,13 +372,17 @@ function M.wrap(atoms, opts)
         end
       end
 
-      -- 3) 断点优先级扫描：ZWSP（最高，保留）＞ sentence ＞ clause（4.3.4）
-      local zbest, sent, clause
+      -- 3) 断点优先级扫描：ZWSP（最高，保留）＞ sentence ＞ colon ＞ clause（4.3.4）
+      local zbest, sent, colon, clause
       for tt = i, k do
         if after_breakable(tt) then
           if zwsp_after[tt] then zbest = tt end -- 取拟合区内最远的 ZWSP 断点
           local lv = level_of(tt)
           if lv == "sentence" then sent = tt end -- 句末对齐：拟合区内任意句级标点皆可断，取最远
+          -- 冒号「高于逗号、低于句号」：优先级由排序保证（sentence ＞ colon ＞ clause）；
+          -- 同时与逗号一样保留 allow_c 短行下限，避免冒号靠行首时断出过短的行
+          -- （用户裁定 + markdown 规则「断点须让行 >~70 列」）。
+          if lv == "colon" and cum[tt] >= avail - allow_c then colon = tt end
           if lv == "clause" and cum[tt] >= avail - allow_c then clause = tt end
         end
       end
@@ -388,6 +395,8 @@ function M.wrap(atoms, opts)
         endj = zbest
       elseif (not wrap_sentence) and sent then
         endj = sent
+      elseif (not wrap_sentence) and colon then
+        endj = colon
       elseif (not wrap_sentence) and clause then
         endj = clause
       elseif after_breakable(k) then

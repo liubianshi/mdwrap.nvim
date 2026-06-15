@@ -80,6 +80,24 @@ local function rows_of(node)
   return sr, er
 end
 
+--- paragraph 的**正文**结束行：取其 `inline` 子节点的最大结束行，而非 paragraph 节点自身的
+--- range。嵌套列表里 tree-sitter 会把**下一个**列表项的缩进 `block_continuation` 收作本
+--- paragraph 的尾随子节点，使 paragraph range 多吞一行；而真正的软续行里 `block_continuation`
+--- 嵌在 `inline` **内部**，inline range 已覆盖续行。故按 inline 定界可精确区分两者。
+--- 无 inline 子节点（理论上不该发生）时返回 nil，调用方回退 paragraph range。
+---@param para TSNode
+---@return integer? content_erow
+local function content_end_row(para)
+  local last
+  for c in para:iter_children() do
+    if c:type() == "inline" then
+      local _, er = rows_of(c) -- 复用 rows_of 的 ec==0 末行归一
+      last = math.max(last or er, er)
+    end
+  end
+  return last
+end
+
 --- 子树内是否含 ERROR / 缺失节点（畸形）。
 ---@param node TSNode
 ---@return boolean
@@ -163,6 +181,7 @@ end
 ---@param out mdwrap.Block[]
 local function handle_paragraph(para, get_line, out)
   local psr, per = rows_of(para)
+  per = content_end_row(para) or per -- 剔除尾随的跨项 block_continuation（见 content_end_row）
   local lines = {}
   for r = psr, per do lines[#lines + 1] = get_line(r) end
 
@@ -206,6 +225,15 @@ local function handle_paragraph(para, get_line, out)
 
   -- 普通 wrap paragraph（含引用 / 列表前缀）
   local prefix_first, prefix_rest, quote_part = compute_prefix(para, get_line)
+  -- 独立缩进段落（无引用 / 列表标记，prefix_first 为空）：tree-sitter 把前导空白当作 inline
+  -- 内容，折行时会被吞掉。把首行的前导空白提升为**悬挂缩进**（prefix_first==prefix_rest），
+  -- 折行后续行也保留同样缩进。仅 1–3 空格能走到这里（≥4 空格是 indented_code_block，整体 preserve）。
+  if prefix_first == "" then
+    local indent = lines[1]:match("^[ \t]+")
+    if indent then
+      prefix_first, prefix_rest = indent, indent
+    end
+  end
   local content, prefixes = {}, {}
   for idx, l in ipairs(lines) do
     local rm
@@ -239,6 +267,7 @@ local function handle_block_quote(bq, get_line, out)
           out[#out + 1] = { action = "preserve", srow = psr, erow = psr }
           -- 其余行作为 wrap（带 > 前缀）
           local _, per = rows_of(child)
+          per = content_end_row(child) or per -- 同 handle_paragraph：剔除尾随跨块 block_continuation
           if per > psr then
             local _, _, quote_part = compute_prefix(child, get_line)
             -- callout 正文沿用引用前缀（quote_part，如 "> "）

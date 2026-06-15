@@ -250,11 +250,13 @@
   **修复:把这 5 个码点补进 `forbit_break_before`**(句末标点绝不落行首,本就该在此表)。
   教训:标点须同时进 `sentence_sep`/`clause_sep`(偏好)与 `forbit_break_*`(分类)两套表才完整生效。
 
-# gqq 回退 Neovim 默认（偏离 design §146）
+# gqq 只折当前行（偏离 design §146）
 
-- **背景**：design §146 规定 `gqq`/`gqip`/可视 `gq` 都「扩展到完整块」。用户裁定 `gqq` 应走 Neovim
-  默认(只折当前行,不波及整段)。
+- **背景**：design §146 规定 `gqq`/`gqip`/可视 `gq` 都「扩展到完整块」。用户裁定 `gqq` 只折当前行,
+  不波及整段。
 - **实测依据**：`formatexpr` 下 `gqq` → `v:count==1`;`gqip`(多行段落)→ `count>1`;可视/`gqj` → `count>1`。
-- **裁定**：`formatexpr` 中 `count<=1` 且当前行落在**多行 wrap 块**内 → `return 1` 回退默认。
-  `gqip`/可视 `gq`(count>1)与单行块仍走 mdwrap 整块——单行块下 `gqq`/`gqip` 等价,折单行段落正确。
+- **裁定（修订）**：`formatexpr` 中 `count<=1` 且当前行落在**多行 wrap 块**内 → **只用 mdwrap 折当前行**
+  (`format_single_line`:把该行当单行块、不合并整段)。`gqip`/可视 `gq`(count>1)与单行块仍走 mdwrap 整块。
+- **修订原因**：原裁定此处 `return 1` 回退 Neovim 默认折行引擎,但该引擎不在 CJK 之间断行——对中文
+  等于「不折」。意图(「只折当前行」)不变,机制从「回退默认」改为「mdwrap 单行折行」,中文才真正生效。
 

@@ -128,8 +128,10 @@ check("27 en-sentence-preferred", wrap("The cat sat on the mat. The dog ran in t
   { "The cat sat on the mat.", "The dog ran in the park quickly." })
 check("28 en-abbreviation", wrap("See Dr. Smith and Mr. Jones at the office today please now.", { width = 40 }),
   { "See Dr. Smith and Mr. Jones at the", "office today please now." })
+-- 冒号为中间级且带 allow_c 短行下限：「following:」(col 26 < 40-12) 太靠前不在此断，
+-- 改按词贪心填满（用户裁定，见 CHANGELOG / golden 29-en-colon）。
 check("29 en-colon", wrap("Please note the following: all lines must wrap at punctuation marks correctly.", { width = 40 }),
-  { "Please note the following:", "all lines must wrap at punctuation marks", "correctly." })
+  { "Please note the following: all lines", "must wrap at punctuation marks", "correctly." })
 
 -- ============================================================
 -- 22 rewrap-merge（width=30，合并后重折；中文无空格 / 英文一空格）
