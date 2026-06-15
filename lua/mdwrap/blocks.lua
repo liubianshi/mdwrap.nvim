@@ -27,9 +27,10 @@
 --           task_list_marker_unchecked            -- "[ ]"（checked 为 _checked）
 --           paragraph
 --             inline
---       pipe_table              -- preserve；子节点 pipe_table_header /
+--       pipe_table              -- action="table"（format_tables）/ 否则原样；子节点 pipe_table_header /
 --                               --   pipe_table_delimiter_row / pipe_table_row /
---                               --   pipe_table_cell / pipe_table_delimiter_cell
+--                               --   pipe_table_cell / pipe_table_delimiter_cell；
+--                               --   分隔单元格含 pipe_table_align_left/right 子节点编码对齐（实测确认）
 --       atx_heading             -- preserve；含 atx_h{1..6}_marker + inline
 --       setext_heading          -- preserve；含 paragraph + setext_h{1,2}_underline
 --       link_reference_definition  -- preserve；含 link_label + link_destination
@@ -55,7 +56,6 @@ local PRESERVE_TYPES = {
   indented_code_block = true,
   minus_metadata = true,
   plus_metadata = true,
-  pipe_table = true,
   atx_heading = true,
   setext_heading = true,
   link_reference_definition = true,
@@ -250,6 +250,65 @@ local function handle_paragraph(para, get_line, out)
   }
 end
 
+--- 单元格文本：取节点 range 内文本并 trim 两端空白（cell range 含不规整的首尾空格）。
+---@param cell TSNode
+---@param get_line fun(r:integer):string
+---@return string
+local function cell_text(cell, get_line)
+  local sr, sc, _, ec = cell:range()
+  -- pipe_table_cell 不跨行；直接按列切片本行，再 trim 两端空白。
+  return vim.trim(get_line(sr):sub(sc + 1, ec))
+end
+
+--- 由 pipe_table_delimiter_cell 的 align_left/align_right 子节点判定列对齐。
+---   左冒号(:--) ⇒ align_left；右冒号(--:) ⇒ align_right；两者皆有 ⇒ center；皆无 ⇒ default。
+---@param dcell TSNode
+---@return mdwrap.TableAlign
+local function delim_align(dcell)
+  local l, r = false, false
+  for c in dcell:iter_children() do
+    local t = c:type()
+    if t == "pipe_table_align_left" then l = true
+    elseif t == "pipe_table_align_right" then r = true end
+  end
+  if l and r then return "center"
+  elseif r then return "right"
+  elseif l then return "left"
+  else return "default" end
+end
+
+--- 处理 pipe_table：抽出单元格矩阵与各列对齐，产出 action=="table" 块。
+--- 畸形（含 ERROR/缺失）表回退整块 preserve。
+---@param tbl TSNode
+---@param get_line fun(r:integer):string
+---@param out mdwrap.Block[]
+local function handle_table(tbl, get_line, out)
+  local sr, er = rows_of(tbl)
+  if has_error(tbl) then
+    out[#out + 1] = { action = "preserve", srow = sr, erow = er }
+    return
+  end
+  ---@type string[][]
+  local rows = {}
+  ---@type mdwrap.TableAlign[]
+  local aligns = {}
+  for child in tbl:iter_children() do
+    local t = child:type()
+    if t == "pipe_table_header" or t == "pipe_table_row" then
+      local cells = {}
+      for c in child:iter_children() do
+        if c:type() == "pipe_table_cell" then cells[#cells + 1] = cell_text(c, get_line) end
+      end
+      rows[#rows + 1] = cells
+    elseif t == "pipe_table_delimiter_row" then
+      for c in child:iter_children() do
+        if c:type() == "pipe_table_delimiter_cell" then aligns[#aligns + 1] = delim_align(c) end
+      end
+    end
+  end
+  out[#out + 1] = { action = "table", srow = sr, erow = er, table_rows = rows, table_aligns = aligns }
+end
+
 --- 处理 block_quote：识别 callout 标题行，递归处理内部块。
 ---@param bq TSNode
 ---@param get_line fun(r:integer):string
@@ -310,6 +369,8 @@ local function walk(node, get_line, out)
         else
           handle_paragraph(child, get_line, out)
         end
+      elseif t == "pipe_table" then
+        handle_table(child, get_line, out)
       elseif t == "block_quote" then
         handle_block_quote(child, get_line, out)
       elseif t == "list" or t == "list_item" or t == "section" or t == "document" then

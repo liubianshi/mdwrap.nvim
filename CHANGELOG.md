@@ -9,6 +9,15 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-15
+
+### Added
+
+- 管道表格按列视觉宽对齐（`format_tables`，默认开）：表格**不折行**，按列「视觉宽度」（CJK 计 2）
+  补空格使各列对齐；对齐语义由分隔行 `:--`/`--:`/`:--:` 决定（左/右/居中），居中奇数余量放右侧；
+  单元格内容复用 `cjk_english_spacing` 做盘古空格。`format_tables=false` 时表格整块 preserve 字节不变。
+  新增纯模块 `table_align.lua`（禁 require vim，可裸 luajit 测）；新增 golden 用例 38-table-align。
+
 ## [0.1.0] - 2026-06-15
 
 ### Added

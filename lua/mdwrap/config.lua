@@ -15,6 +15,7 @@ function M.defaults()
     cjk_english_spacing = true,  -- 盘古之白 pass
     cjk_break_at_punct_only = true, -- 中文严格只在标点处断行；无标点的超长子句才字间断兜底
     bracket_as_unit = true,      -- 括号配对作整体：能整组放下就不在括号内部断（整组宽超一行才内部断）
+    format_tables = true,        -- 管道表格按列视觉宽对齐补空格（不折行）；false 时表格整块 preserve 字节不动
     respect_conceallevel = true, -- conceallevel=0 的窗口不扣 conceal 宽度
     respect_extmark_conceal = true, -- 读持久 conceal extmark（render-markdown/markview 等渲染插件的宽度增量）；插件无关
     notify_on_error_node = true, -- 块含 ERROR 节点跳过时提示

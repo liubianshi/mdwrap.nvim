@@ -32,8 +32,10 @@
   中英文一视同仁——半角 `. : ; ! ?` 与全角 `。：；！？` 同为句级断点，`,`、`，`、`、` 为子句级
   最后手段；英文另带缩写保护（`Dr.`、`e.g.`、`U.S.` 等不误判为句末）。
 - **行合并无痕**：重折前合并原有软换行，中文行之间无空格，英文行之间恰一个空格。
-- **结构识别**：YAML、代码块、数学块、表格、标题、链接引用定义不折行；列表悬挂缩进；
+- **结构识别**：YAML、代码块、数学块、标题、链接引用定义不折行；列表悬挂缩进；
   嵌套引用前缀；callout 标题独立；`:::` 围栏 div；citation 与 shortcode 作为不可断原子。
+- **表格对齐**：管道表格不折行，按列视觉宽（CJK 计 2）补空格对齐，对齐语义由分隔行冒号决定
+  （`format_tables`，默认开；可关闭回退整块保留）。
 - **盘古之白**：CJK 与拉丁字母、数字之间，CJK 与行内代码之间插入半角空格（可关闭）。
 - **幂等**：格式化两次与一次结果相同。
 - **最小差异**：只改动目标块内的换行与空白，块外字节不变。
@@ -114,6 +116,7 @@ require("mdwrap").setup({
   cjk_english_spacing = true,   -- 盘古之白：CJK↔拉丁/数字、CJK↔行内代码 之间插空格
   cjk_break_at_punct_only = true, -- 中文仅在标点处断行；false 退回传统 CJK 逐字可断
   bracket_as_unit = true,       -- 括号配对作整体：能整组放下就不在括号内部断；超一行才内部断
+  format_tables = true,         -- 管道表格按列视觉宽对齐补空格（不折行）；false 时表格整块 preserve 字节不变
   respect_conceallevel = true,  -- conceallevel=0 的窗口不扣 conceal 宽度
   respect_extmark_conceal = true, -- 读渲染插件（render-markdown/markview 等）的持久 conceal extmark；插件无关
   notify_on_error_node = true,  -- 块含 ERROR 节点（畸形）跳过时提示

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 本地一键：纯模块硬约束冒烟 + 领域类型检查，两道护栏合一。
-#   A) chardata / layout / spacing 在 bare luajit 下独立加载——「禁止 require vim」
+#   A) chardata / layout / spacing / table_align 在 bare luajit 下独立加载——「禁止 require vim」
 #      LuaLS 无法表达，只能靠这道冒烟把守（真把 vim 拖进纯模块，require 链即崩）。
 #      **先跑**：它是该硬约束的唯一护栏，依赖最少（仅 luajit），不应被 LLS 是否安装挡住。
 #   B) lua-language-server --check 静态校验领域类型（注入真实 $VIMRUNTIME，
@@ -23,7 +23,7 @@ if [[ -z "$LUAJIT" ]]; then
   exit 1
 fi
 echo "== pure-module smoke (${LUAJIT##*/}: no-vim / Lua 5.1) =="
-for mod in chardata layout spacing; do
+for mod in chardata layout spacing table_align; do
   if "$LUAJIT" -e "package.path='$ROOT/lua/?.lua;'..package.path; require('mdwrap.$mod')"; then
     echo "  ok: mdwrap.$mod"
   else

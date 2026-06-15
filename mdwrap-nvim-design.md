@@ -153,7 +153,7 @@ mdwrap.nvim/
 | `block_quote` 内的 `paragraph` | wrap | 前缀逐层累加 `> `；引用前缀规范化遵循 `REF/lib/App/Markdown/Utils.pm` 的 `format_quote_line` |
 | `fenced_code_block`、缩进代码块 | preserve | |
 | `minus_metadata`／`plus_metadata`（YAML／TOML 头） | preserve | |
-| `pipe_table` 及一切表格节点 | preserve | |
+| `pipe_table` | table（`format_tables=true`，默认）/ preserve | 不折行，按列视觉宽对齐补空格；对齐由分隔行 `align_left`/`align_right` 子节点判定。`format_tables=false` 时整块 preserve |
 | `atx_heading`、`setext_heading` | preserve | |
 | `link_reference_definition` | preserve | |
 | `html_block`（含 HTML 注释） | preserve | |
@@ -362,7 +362,10 @@ nvim --headless --clean -u tests/minimal_init.lua \
 
 17-code-block（width=20）：围栏代码块与四空格缩进代码块各一，内含超长行与中文。→ 逐字节不变。
 
-18-table（width=20)：一个 pipe table，单元格含长中文。→ 逐字节不变。
+18-table（width=20, format_tables=false)：一个 pipe table，单元格含长中文。→ 关开关时逐字节不变。
+
+38-table-align（默认配置）：覆盖左/居中/右/默认四种对齐 + 盘古空格 + 短单元格 + 缺/多列。
+→ 按列视觉宽对齐补空格，不折行；对齐语义补白（右靠右、居中居中），居中奇余放右。
 
 19-headings（width=20）：atx 与 setext 标题各一，标题文本超宽。→ 逐字节不变。
 

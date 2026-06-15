@@ -11,7 +11,8 @@
 ---@alias mdwrap.AtomKind  "code"|"math"|"link"|"cite"|"shortcode"
 ---@alias mdwrap.CharAttr  "PUN_FORBIT_BREAK_AFTER"|"PUN_FORBIT_BREAK_BEFORE"|"CJK_PUN"|"CJK"|"OTHER"
 ---@alias mdwrap.WidthFn   fun(s:string):integer
----@alias mdwrap.BlockAction "wrap"|"preserve"
+---@alias mdwrap.BlockAction "wrap"|"preserve"|"table"
+---@alias mdwrap.TableAlign  "default"|"left"|"right"|"center"
 
 ---@class mdwrap.Atom
 ---@field text string            原始字节（含被并入的 0 宽 conceal 标记 / 行尾 ZWSP）
@@ -28,6 +29,8 @@
 ---@field content_lines? string[] wrap 块剥前缀后的正文行
 ---@field content_prefix? string[] 各 content 行被 strip_prefix 剥掉的**前缀字符串**（与 content_lines 等长）。
 ---                                #prefix = 回推 extmark buffer 列的字节数；其文本用于量前缀区隐藏宽（M5-B）。
+---@field table_rows? string[][]   action=="table" 专用：已 trim 的单元格文本矩阵（含表头，不含分隔行）。
+---@field table_aligns? mdwrap.TableAlign[]  action=="table" 专用：各列对齐（由分隔行 align_left/align_right 子节点判定）。
 
 ---@class mdwrap.Config            -- 解析后内部配置（字段非可选）
 ---@field width integer|nil
@@ -37,6 +40,7 @@
 ---@field cjk_english_spacing boolean
 ---@field cjk_break_at_punct_only boolean  -- true 时中文仅在标点处断行（无标点超长子句字间断兜底）；false 退回传统 CJK 字间可断
 ---@field bracket_as_unit boolean  -- true 时括号配对作整体（能整组放下就不在括号内部断行；整组宽超一行才回退内部断）
+---@field format_tables boolean  -- true 时管道表格按列视觉宽对齐补空格（不折行）；false 时表格整块 preserve 字节不动
 ---@field respect_conceallevel boolean
 ---@field respect_extmark_conceal boolean  -- false 时不读持久 conceal extmark（render-markdown/markview 等渲染插件的宽度增量）
 ---@field notify_on_error_node boolean

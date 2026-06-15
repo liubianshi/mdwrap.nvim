@@ -8,6 +8,7 @@ local blocks = require("mdwrap.blocks")
 local atoms = require("mdwrap.atoms")
 local spacing = require("mdwrap.spacing")
 local layout = require("mdwrap.layout")
+local table_align = require("mdwrap.table_align")
 local conceal_mod = require("mdwrap.conceal")
 
 local M = {}
@@ -79,6 +80,15 @@ local function body_mark_ex(mk, removed, seg)
   return nil
 end
 
+--- 把原子列表拼回纯文本（仅取各原子字面字节，含并入的 conceal 标记 / ZWSP）。
+---@param as mdwrap.Atom[]
+---@return string
+local function atoms_text(as)
+  local parts = {}
+  for _, a in ipairs(as) do parts[#parts + 1] = a.text end
+  return table.concat(parts)
+end
+
 --- 处理一个 wrap 块，返回新的行列表。
 ---@param b mdwrap.Block
 ---@param opts mdwrap.Config
@@ -109,10 +119,8 @@ local function process_wrap(b, opts, width, conceal, ctx)
       end
       local as = atoms.atomize(line, { width_fn = width_fn, conceal = conceal, extmark_conceal = ex })
       if opts.cjk_english_spacing then as = spacing.apply(as) end
-      local parts = {}
-      for _, a in ipairs(as) do parts[#parts + 1] = a.text end
       local prefix = (idx == 1) and b.prefix_first or b.prefix_rest
-      out[#out + 1] = (prefix .. table.concat(parts)):gsub("%s+$", "")
+      out[#out + 1] = (prefix .. atoms_text(as)):gsub("%s+$", "")
     end
     return out
   end
@@ -168,6 +176,32 @@ local function process_wrap(b, opts, width, conceal, ctx)
   return layout.wrap(as, lopts)
 end
 
+--- 处理一个 table 块：对各单元格施加盘古空格（复用正文原子规则）后按列对齐补白。
+--- 不折行，宽度可超 width。conceal 关：按字面视觉宽对齐（v1 不扣单元格内 conceal）。
+---@param b mdwrap.Block
+---@param opts mdwrap.Config
+---@return string[]
+local function process_table(b, opts)
+  local width_fn = vim.fn.strdisplaywidth
+  local rows = b.table_rows or {}
+  if opts.cjk_english_spacing then
+    local normalized = {}
+    for i, row in ipairs(rows) do
+      local nr = {}
+      for c, cell in ipairs(row) do
+        if cell == "" then
+          nr[c] = "" -- 空格无需起 tree-sitter parser（同时避开 atomize 空串边界）
+        else
+          nr[c] = atoms_text(spacing.apply(atoms.atomize(cell, { width_fn = width_fn, conceal = false })))
+        end
+      end
+      normalized[i] = nr
+    end
+    rows = normalized
+  end
+  return table_align.render(rows, b.table_aligns or {}, width_fn)
+end
+
 --- 自底向上对落在范围内的 wrap 块做替换；`replace(srow, erow, new_lines)`（0-indexed 闭区间）
 --- 由调用方提供——buffer 版用 nvim_buf_set_lines，lines 版改数组。自底向上避免行号漂移。
 ---@param bs mdwrap.Block[]
@@ -183,6 +217,8 @@ local function apply_blocks(bs, opts, width, conceal, ctx, replace)
     local in_range = (not rs) or (b.srow <= (re or rs) and b.erow >= rs)
     if b.action == "wrap" and in_range then
       replace(b.srow, b.erow, process_wrap(b, opts, width, conceal, ctx))
+    elseif b.action == "table" and opts.format_tables and in_range then
+      replace(b.srow, b.erow, process_table(b, opts))
     end
   end
 end
