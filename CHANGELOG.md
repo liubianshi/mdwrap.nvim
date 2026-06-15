@@ -9,6 +9,23 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-15
+
+### Added
+
+- 手动关闭折行：`mdwrap-ignore` 系标记（文件 / 区域 / 块 / 行四级）。载体为独占一行的 HTML 注释
+  （大小写不敏感、内部空白宽松），文件级额外支持 frontmatter 顶层 `mdwrap: false`：
+  - `<!-- mdwrap-ignore-file -->` 或 `mdwrap: false` → 整文件跳过；
+  - `<!-- mdwrap-ignore-start -->` … `<!-- mdwrap-ignore-end -->` → 区间内所有块跳过
+    （未配对 start 延伸到 EOF，未配对 end 无害）；
+  - `<!-- mdwrap-ignore -->` → 其后第一个 wrap/table 块跳过；
+  - `<!-- mdwrap-ignore-line -->` → 其下一源行跳过（在段落内则拆段，仅护该行）。
+
+  被忽略内容**逐字节不变**（等同 preserve），保持幂等。新增纯模块 `ignore.lua`（scan + apply，
+  禁 require vim，可裸 luajit 测）；`blocks.split` / `split_lines` 末尾接 `ignore.apply`，
+  所有入口（`format_buffer` / `format_lines` / `format_file` / formatexpr / `gqq` / `:MdwrapFormat`）
+  自动获得忽略行为。新增 golden 用例 39–43 与纯函数单测 `test_ignore.lua`。
+
 ## [0.2.0] - 2026-06-15
 
 ### Added

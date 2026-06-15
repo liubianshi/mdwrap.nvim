@@ -48,6 +48,8 @@
 --   设计文档写 `fenced_code_block` —— 实测同名（样本未含围栏代码块，名称沿用社区标准）。
 --   设计文档写「minus_metadata/plus_metadata」—— 实测 YAML 为 minus_metadata，确认。
 
+local ignore = require("mdwrap.ignore")
+
 local M = {}
 
 -- 原样保留的叶块节点类型。
@@ -412,7 +414,11 @@ function M.split(bufnr)
   local function get_line(r)
     return all_lines[r + 1] or ""
   end
-  return split_core(root, get_line)
+  local bs = split_core(root, get_line)
+  -- mdwrap-ignore 标记：扫出忽略意图后把相交块翻 preserve（行级则拆块）。标记即显式意图，
+  -- 始终生效，与 config 无关（与 format_tables 在 init 层 gate 的分工不同——ignore 改的是块
+  -- 列表本身，故落在 blocks 层）。
+  return ignore.apply(bs, ignore.scan(all_lines), #all_lines)
 end
 
 --- 从内存 lines 解析并切块（conform 链式集成用：不依赖 buffer 树，避免前序 formatter
@@ -426,7 +432,8 @@ function M.split_lines(lines)
   local function get_line(r)
     return lines[r + 1] or ""
   end
-  return split_core(root, get_line)
+  local bs = split_core(root, get_line)
+  return ignore.apply(bs, ignore.scan(lines), #lines)
 end
 
 return M

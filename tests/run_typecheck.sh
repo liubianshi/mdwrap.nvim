@@ -23,7 +23,7 @@ if [[ -z "$LUAJIT" ]]; then
   exit 1
 fi
 echo "== pure-module smoke (${LUAJIT##*/}: no-vim / Lua 5.1) =="
-for mod in chardata layout spacing table_align; do
+for mod in chardata layout spacing table_align ignore; do
   if "$LUAJIT" -e "package.path='$ROOT/lua/?.lua;'..package.path; require('mdwrap.$mod')"; then
     echo "  ok: mdwrap.$mod"
   else

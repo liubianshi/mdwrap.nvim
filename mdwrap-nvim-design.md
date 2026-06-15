@@ -165,6 +165,43 @@ mdwrap.nvim/
    - 整段落为 `{{< ... >}}` 的 shortcode 块：preserve。
 5. 块内含 TS `ERROR` 节点时整块 preserve，并通过 `vim.notify` 一次性提示（可配置关闭）。
 
+#### 4.1.1 ignore.lua：手动关闭折行（mdwrap-ignore 标记）
+
+作者可用显式标记声明某处不被折行，覆盖四个粒度：整文件、区域、下一块、下一行。载体是
+**独占一行的 HTML 注释**（tree-sitter 已解析为 `html_block` 且 preserve，天然不被改写），
+文件级额外支持 frontmatter 顶层键。被忽略内容**逐字节不变**（等同 preserve），且幂等。
+
+机制是一个统一管线，而非四个特例：**先扫标记得出忽略意图（`ignore.scan`），再把与之相交的块改成
+preserve（行级则拆块，`ignore.apply`）**。`apply_blocks` 完全不改——它只处理 `wrap` / `table`，
+`preserve` 自动跳过。`ignore.lua` 是**纯模块**（禁 `require vim`，可裸 luajit 测，与 layout /
+spacing / chardata / table_align 同级），接线落在 `blocks.split` / `split_lines` 末尾，故所有入口
+自动获得忽略行为。
+
+标记语法（大小写不敏感、内部空白宽松；单行整行匹配
+`^%s*<!%-%-%s*mdwrap%-ignore([%w%-]*)%s*%-%->%s*$`，捕获后缀分类）：
+
+| 标记 | 作用 |
+| --- | --- |
+| `<!-- mdwrap-ignore-file -->`（文件内任意处）或 frontmatter 顶层 `mdwrap: false` | 整文件跳过 |
+| `<!-- mdwrap-ignore-start -->` … `<!-- mdwrap-ignore-end -->` | 区间内所有块跳过 |
+| `<!-- mdwrap-ignore -->` | 其后第一个 wrap / table 块跳过 |
+| `<!-- mdwrap-ignore-line -->` | 其下一源行跳过（在段落内则拆段保护该行） |
+
+`ignore.scan(lines)` 产出 `mdwrap.Ignore = { file, ranges, block_lnums, line_lnums }`（均 0-indexed）：
+frontmatter 仅当首行恰为 `---` 时成立，至下一 `---` / `...` 止，区间内匹配
+`^mdwrap%s*:%s*false%s*$`（false 大小写不敏感、行首无缩进 ⇒ 顶层键）；区域 start/end 配对成闭区间，
+未配对 start 延伸到末行，未配对 end 无害忽略。
+
+`ignore.apply(blocks, scan, nlines)`：`file` → 所有块翻 preserve；`ranges` → 相交块翻 preserve；
+`block_lnums` 每个 m → 「srow > m 的第一个 wrap/table 块」翻 preserve；`line_lnums` 每个 m →
+受保护源行 L = m+1，定位含 L 的块——单行 / 非 wrap / table 块整块 preserve，多行 wrap 块则**拆块**
+（连续非保护行的子 wrap 块 + 受保护行的单行 preserve 块，续段子块的 `prefix_first` 取原块
+`prefix_rest`，悬挂缩进语义保持）。
+
+实测依据：标记注释与紧贴的段落之间即使无空行，仍是独立 `html_block`；`-line` 标记后的两行会被
+tree-sitter 合并为一个 paragraph，故行级必须拆块。又因注释 html_block 总会切断它前面的段落，
+被保护行恒为其所在块的首行，三段拆分的「前段」实际为空（实现仍按通用三段写）。
+
 ### 4.2 atoms.lua：原子化与视觉宽度
 
 **输入**：一个 wrap 块的文本与对应 `markdown_inline` 子树。

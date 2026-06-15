@@ -78,6 +78,13 @@
 ---@field conceal? boolean
 ---@field extmark_conceal? mdwrap.ExtmarkConceal[]  -- 逻辑串坐标的 extmark conceal 覆盖，与 tree-sitter conceal 合并去重
 
+--- mdwrap-ignore 标记的扫描结果（ignore.scan 产出，ignore.apply 消费）。坐标一律 0-indexed。
+---@class mdwrap.Ignore
+---@field file boolean             整文件跳过（`mdwrap-ignore-file` 注释命中，或 frontmatter 顶层 `mdwrap: false`）
+---@field ranges integer[][]       区域闭区间 {s,e} 列表（start/end 配对；未配对 start 延伸到末行）
+---@field block_lnums integer[]    携带 `mdwrap-ignore`（块级）的标记行号
+---@field line_lnums integer[]     携带 `mdwrap-ignore-line`（行级）的标记行号
+
 ---@class mdwrap.GoldenResult       -- test_runner.run 返回
 ---@field name string
 ---@field pass boolean
