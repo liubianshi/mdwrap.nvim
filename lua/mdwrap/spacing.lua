@@ -26,18 +26,28 @@ local function role(atom, side)
   return nil
 end
 
---- 两原子之间是否需要插入盘古空格。
+--- 两原子之间是否构成盘古边界（CJK 与拉丁／行内代码相邻）。
+--- 这里是该边界的**唯一定义**：spacing 用它决定在哪插空格，layout 用它认出「盘古间隙」
+--- 并在严格模式下降级该处的断点。两者必须同源——否则原文已写好空格的文本与未写的文本
+--- 会被区别对待，折行结果取决于源文件排没排过版。
+---@param prev mdwrap.Atom
+---@param cur mdwrap.Atom
+function M.is_pangu_boundary(prev, cur)
+  local l = role(prev, "last")
+  local r = role(cur, "first")
+  if not l or not r then return false end
+  -- 仅 CJK 与（拉丁/代码）之间；两个拉丁、两个 CJK、code↔latin 均不算
+  if l == "cjk" and (r == "latin" or r == "code") then return true end
+  if r == "cjk" and (l == "latin" or l == "code") then return true end
+  return false
+end
+
+--- 两原子之间是否需要插入盘古空格（边界成立，且两侧都还没有空格）。
 ---@param prev mdwrap.Atom
 ---@param cur mdwrap.Atom
 local function need_space(prev, cur)
   if prev.class == "space" or cur.class == "space" then return false end
-  local l = role(prev, "last")
-  local r = role(cur, "first")
-  if not l or not r then return false end
-  -- 仅 CJK 与（拉丁/代码）之间插入；两个拉丁、两个 CJK、code↔latin 均不插
-  if l == "cjk" and (r == "latin" or r == "code") then return true end
-  if r == "cjk" and (l == "latin" or l == "code") then return true end
-  return false
+  return M.is_pangu_boundary(prev, cur)
 end
 
 --- 对原子列表施加盘古空格，返回新列表。

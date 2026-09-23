@@ -16,6 +16,7 @@
 --   本层只对前缀字符串调用 opts.width_fn 来量宽（前缀通常是 ASCII）。
 
 local chardata = require("mdwrap.chardata")
+local spacing = require("mdwrap.spacing") -- 仅取 is_pangu_boundary；同为纯模块，无 vim 依赖
 
 local M = {}
 
@@ -228,6 +229,22 @@ function M.wrap(atoms, opts)
 
   local function gmeta(k) return gap[k] or { space = false } end
 
+  -- 盘古间隙：CJK 与拉丁／行内代码之间的那个半角空格（「2023 年间」「而 APEC」之间那一个）。
+  -- **判据取自文本两侧的原子，不问这个空格是谁写的**：spacing.apply 只补原文缺失的那些，
+  -- 原文已写好的同样是盘古空格，两者必须同等对待——否则折行结果取决于源文件排没排过版，
+  -- format(format(x)) ~= format(x)。判据与插入口径同源（spacing.is_pangu_boundary），
+  -- 故链接／数学／引用等 atomic 边界不在其列（spacing 本就不在那里插空格）。
+  -- 每个间隙只判一次：is_pangu_boundary 含字符串取末字符 / %w 匹配，放进 gap_breakable
+  -- 会被逐行重复调用。只有严格模式会查它，其余模式连表都不建。
+  local pangu_gap = {}
+  if punct_only then
+    for k = 2, m do
+      if gap[k].space and spacing.is_pangu_boundary(tokens[k - 1], tokens[k]) then
+        pangu_gap[k] = true
+      end
+    end
+  end
+
   -- 括号配对作整体（bracket_as_unit）：用栈匹配配对括号；组宽 ≤ 续行整行可用宽时，锁定组内
   -- 所有间隙（不在括号内部断），宁可整组移到下一行（组前 `（` 之「前」仍可断）；组宽超一行才
   -- 回退内部断。半角括号紧贴内容时落在 word 原子首/尾字符，故按 token 文本首/末字符判定。
@@ -278,11 +295,24 @@ function M.wrap(atoms, opts)
   --   避免「无标点的超长中文子句」无处可断而退化成单字一行。
   local allow_cjk_cur = not punct_only
 
+  -- 本行盘古空格断许可（4.3.1 补充）：
+  --   盘古空格不是原文的词边界——在它处断行等于把「2023 年间」这类语义单元劈开，
+  --   与「中文里标点才是唯一合法断点」相悖。严格模式下降级为次级断点：默认不可断，
+  --   仅当拟合区内一个标点断点都没有时才放开兜底（仍排在汉字间硬断之前）。
+  --   非严格模式恒 true，与普通空格无异。
+  local allow_pangu_cur = not punct_only
+
+  -- 严格中文模式：仅此模式下行尾必须落在标点上（punct_far / needs_punct_end 才有意义）。
+  local strict_end = punct_only and (not wrap_sentence)
+
   -- token k 之「前」的间隙是否可断（k>=2）
   local function gap_breakable(k)
     if zwsp_after[k - 1] then return true end -- ZWSP 优先断点（高于禁则与括号锁定，用户手工标记）
     if locked_gap[k] then return false end    -- 括号组内部：整组作单元，不在内部断
-    if gmeta(k).space then return true end
+    if gmeta(k).space then
+      if not allow_pangu_cur and pangu_gap[k] then return false end -- 盘古空格降级
+      return true
+    end
     local a, b = tokens[k - 1], tokens[k]
     if not can_break_after(a) then return false end
     if not can_break_before(b) then return false end
@@ -302,6 +332,14 @@ function M.wrap(atoms, opts)
     return gap_breakable(t + 1)
   end
 
+  -- 区间 [from,to] 内是否存在断点（按当前 allow_* 档位）。
+  local function has_break(from, to)
+    for tt = from, to do
+      if after_breakable(tt) then return true end
+    end
+    return false
+  end
+
   local function level_of(t)
     local txt = tokens[t].text
     local lc = last_char(txt)
@@ -315,10 +353,26 @@ function M.wrap(atoms, opts)
     -- 但仍高于逗号一级（用户裁定：冒号不等同于句号/分号/叹号）。
     if cp and chardata.colon_sep[cp] then return "colon" end
     -- 顿号「、」是并列词语连接符，非子句边界，低于逗号一级：不享受 clause 短行容忍，
-    -- 仅在贪心填满到它时才断（严格模式下它仍是合法标点断点）。
-    if cp == 0x3001 then return "normal" end
+    -- 仅在贪心填满到它时才断。自成一档（不匹配扫描里的 clause），但它确是标点，
+    -- 故 punct_break 认它——严格模式下行尾可以落在顿号上。
+    if cp == 0x3001 then return "series" end
     if cp and chardata.clause_sep[cp] then return "clause" end
     return "normal"
+  end
+
+  -- 「标点断点」：断开后行尾落在标点上（句末／冒号／逗号／顿号，含半角句读；段尾亦算）。
+  -- 调用方手上已有 level_of 结果时传进来，省一次分类。
+  local function punct_break(t, lv)
+    if t >= m then return true end
+    return (lv or level_of(t)) ~= "normal"
+  end
+
+  -- 严格中文模式下，行尾不得停在此处，须回落到标点断点：断点涉及中文（两侧任一为汉字或
+  -- 全角标点，盘古间隙按定义必有一侧为宽字符）且不落在标点上。
+  -- 纯拉丁语境的断点（英文词间空格、英文与链接／代码之间）不涉中文，照常可作行尾。
+  local function needs_punct_end(t, lv)
+    if not strict_end or t >= m then return false end
+    return (is_wide_class(tokens[t]) or is_wide_class(tokens[t + 1])) and not punct_break(t, lv)
   end
 
   local lines = {}
@@ -361,23 +415,23 @@ function M.wrap(atoms, opts)
       --   wrap_sentence=true（按宽填满）→ 放开字间断兜底，按宽断满；
       --   wrap_sentence=false（句末优先）→ 整段溢出到下一个标点（或行尾），绝不在非标点处断。
       allow_cjk_cur = not punct_only
+      allow_pangu_cur = not punct_only
       local overflow_to_punct = false
-      if punct_only then
-        local has_punct_break = false
-        for tt = i, k do
-          if after_breakable(tt) then has_punct_break = true; break end
-        end
-        if not has_punct_break then
+      if punct_only and not has_break(i, k) then
+        allow_pangu_cur = true -- 第二档：放开盘古空格（仍禁汉字间硬断）
+        if not has_break(i, k) then
           if wrap_sentence then allow_cjk_cur = true else overflow_to_punct = true end
         end
       end
 
       -- 3) 断点优先级扫描：ZWSP（最高，保留）＞ sentence ＞ colon ＞ clause（4.3.4）
-      local zbest, sent, colon, clause
+      local zbest, sent, colon, clause, punct_far
       for tt = i, k do
         if after_breakable(tt) then
           if zwsp_after[tt] then zbest = tt end -- 取拟合区内最远的 ZWSP 断点
           local lv = level_of(tt)
+          -- 最远标点断点（无短行下限，供回落用）；非严格模式下无人消费，不必算。
+          if strict_end and punct_break(tt, lv) then punct_far = tt end
           if lv == "sentence" then sent = tt end -- 句末对齐：拟合区内任意句级标点皆可断，取最远
           -- 冒号「高于逗号、低于句号」：优先级由排序保证（sentence ＞ colon ＞ clause）；
           -- 同时与逗号一样保留 allow_c 短行下限，避免冒号靠行首时断出过短的行
@@ -400,8 +454,9 @@ function M.wrap(atoms, opts)
       elseif (not wrap_sentence) and clause then
         endj = clause
       elseif after_breakable(k) then
-        -- 4) 普通贪心断点
-        endj = k
+        -- 4) 普通贪心断点。严格中文模式下行尾不得停在非标点处（盘古空格兜底、行内代码／
+        --    链接边界等），此时回落到拟合区内最远的标点断点，无视 clause 短行下限。
+        endj = (punct_far and needs_punct_end(k)) and punct_far or k
       else
         -- 5) 拟合边界落在不可断间隙：按原因分流（4.3.2）
         local next_no_before = (k + 1 <= m) and (not can_break_before(tokens[k + 1]))
@@ -417,6 +472,8 @@ function M.wrap(atoms, opts)
           local e = k - 1
           while e > i and not after_breakable(e) do e = e - 1 end
           endj = (e >= i) and e or i
+          -- 回退落点若仍是非标点断点，继续回落到最远的标点断点（同上）
+          if punct_far and needs_punct_end(endj) then endj = punct_far end
         end
       end
     end
