@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-24
+
 ### Fixed
 
 - **严格模式下不再断在盘古空格处**（`cjk_break_at_punct_only=true`，默认）：CJK 与拉丁／行内代码
