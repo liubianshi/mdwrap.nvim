@@ -491,6 +491,23 @@ function M.wrap(atoms, opts)
     return (c == nil) or c >= avail - allow_c
   end
 
+  --- 前瞻一步：若本行在 t 之后断开，**下一行**会不会照样超宽？
+  --- 下一行从 t+1 起贪心到第一个合法行尾：装得下即不超宽。段尾之前没有合法行尾时，
+  --- 下一行只能整段溢出，同样记作超宽。
+  --- 续行可用宽按 prefix_rest 记账（本行可能是首行，avail 未必等于续行的可用宽）。
+  local function overflows_next_line(t)
+    local rest = width - (opts.prefix_rest_width or width_fn(prefix_rest))
+    if rest < 1 then rest = 1 end
+    local w2 = 0
+    for tt = t + 1, m do
+      if tt > t + 1 and gmeta(tt).space then w2 = w2 + 1 end
+      w2 = w2 + tokens[tt].width
+      if w2 > rest then return true end   -- 还没走到合法行尾就已经超宽
+      if legal_end(tt) then return false end
+    end
+    return false                           -- 整个剩余部分都装得下
+  end
+
   --- 出口收尾。严格模式下落点不够格时，按两种情形分岔（这个分岔是 07/09/11/34/44
   --- 不受影响的**唯一**理由，不可简化为「不够格就溢出」）：
   ---   * 拟合区内**有**标点候选 → 取最远且过 allow_c 下限者；一个都没过下限 → 溢出到下一个
@@ -507,13 +524,46 @@ function M.wrap(atoms, opts)
     if not punct_far then return e end            -- 零标点候选：维持现状
     if punct_ok then return punct_ok end
     -- 有标点候选，但一个都没过 allow_c 下限。两条退路：回落到那个偏短的标点，或整行溢出。
-    -- 溢出的代价是一整行超宽，比「略短的行」更坏，故只在落点**短得离谱**（不足半个可用宽）
-    -- 时才溢出——用户的原话「宁可长一行，也不吐 4 列的行」针对的正是那种两头都坏的输出
-    -- （4 列的行后面跟一个 82 列的行）；一个 24 列 / 40 列可用宽的行不在此列。
+    -- **判据不是「落点有多短」，而是「回落之后是不是仍然要吐一个超宽行」**——用户抱怨的
+    -- 「两头都坏」是一个复合现象（4 列的行后面跟一个 82 列的行），不是单看短行那一头。
+    -- 拿百分比阈值去猜短行必然两头不讨好：50% 会把「48 列 / 100 列可用宽 + 下一行 73 列」
+    -- 这种纯赚的回落误判成溢出，而再调低又救不了下一个反例。故直接前瞻一步：
+    --   * 回落后下一行放得下（不超宽）→ 回落是纯赚，短行换来的是一个正常行；
+    --   * 回落后下一行照样超宽   → 回落只是在超宽行前面多切一刀短行，两头都坏，宁可溢出。
+    -- 前瞻每行最多一次，长度不超过下一行的合法断点距离，相对逐行扫描可忽略。
     local fallback = (qual[e] > LV_NORMAL) and e or punct_far
     local c = cum[fallback]
-    if c and c * 2 >= avail then return fallback end
+    if c and c * 4 >= avail then return fallback end
     return overflow_from(k > e and k or e)
+  end
+
+  --- 短尾巴并入：断点之后若只剩一小截就到句末，把那一截并进本行，宁可有限超宽。
+  ---
+  --- 为什么需要它：`M.wrap` 是逐行贪心的，看不见下一行。断在拟合区内最远的逗号上，本行
+  --- 自身无可指摘，却可能给下一行只留一个十几列的尾巴——用户实例（width=80）：
+  ---   `……六成记在中国香港名下，` (72) / `十年未降[^hkbook]。` (19)
+  --- 句号落在 91 列、已在拟合区外，贪心够不着；而「句级标点不设短行下限」又让那 19 列的
+  --- 尾巴立刻成行。两条各自正确的规则叠出一个两头都别扭的结果。
+  ---
+  --- 适用条件（每一条都是为了不误伤既有裁定）：
+  ---   * 仅 strict_end——与 settle 同门控，`wrap_sentence=true`（按宽填满）绝不超宽；
+  ---   * 本行落点**不是**句级标点——已落句末就没有短尾巴问题，否则「一句一行」会被
+  ---     连续短句黏成一行；
+  ---   * 目标句级标点 `t < m`——`t == m` 是段落最后一行，末行短本来就是正常的；
+  ---   * 尾巴宽度 ≤ avail/4，故超宽幅度也 ≤ avail/4，不会失控。
+  local function merge_short_tail(endj)
+    if not strict_end or endj >= m then return endj end
+    if qual[endj] == LV_SENTENCE then return endj end
+    if zwsp_after[endj] then return endj end -- ZWSP 是手工标记，不动它
+    local limit = avail / 4
+    local w2 = 0
+    for t = endj + 1, m do
+      if t > endj + 1 and gmeta(t).space then w2 = w2 + 1 end
+      w2 = w2 + tokens[t].width
+      if w2 > limit then return endj end -- 尾巴不算短，维持原落点
+      if qual[t] == LV_SENTENCE and t < m and after_breakable(t) then return t end
+    end
+    return endj -- 一路到段尾都没遇到句级标点：这是末行，短是正常的
   end
 
   local lines = {}
@@ -632,12 +682,26 @@ function M.wrap(atoms, opts)
           -- PUSH：禁后断标点回退，推到下一行
           local e = k - 1
           while e > i and not after_breakable(e) do e = e - 1 end
-          endj = settle((e >= i) and e or i)
+          if e >= i and after_breakable(e) then
+            endj = settle(e)
+          else
+            -- 退无可退：i 之后紧跟的就是禁则间隙（实例：行首是「《」，其后是一个比整行
+            -- 还宽的 URL）。此时让 i 独占一行会把禁后断标点留在行尾，禁则当场破——
+            -- 判据是「退回去的落点可不可断」，不是「退没退回到 i」。改为向前拉到第一个
+            -- 可断处，宁可这一行超宽（4.3.6 允许），也不让 `《「（` 落在行尾。
+            local t = i
+            while t < m and not after_breakable(t) do t = t + 1 end
+            endj = t
+          end
         end
       end
     end
 
-    -- 7) 拼装本行文本（token 间若原有空格则补一个；行尾空白稍后清理）
+    -- 7) 短尾巴并入（见 merge_short_tail 的说明）。放在所有出口之后、拼装之前，
+    --    使六个出口一视同仁；超宽单 token 出口（k < i）落点即 i，其后若紧跟句末也该并入。
+    endj = merge_short_tail(endj)
+
+    -- 8) 拼装本行文本（token 间若原有空格则补一个；行尾空白稍后清理）
     local parts = {}
     for tt = i, endj do
       if tt > i and gmeta(tt).space then parts[#parts + 1] = " " end

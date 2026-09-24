@@ -31,7 +31,11 @@ M.forbit_break_after = {
   [0xfe5d] = true, -- ﹝ Small left tortoise shell bracket
   [0xff04] = true, -- ＄ Fullwidth dollar sign
   [0xff08] = true, -- （ Fullwidth left parenthesis
-  [0xff0e] = true, -- ． Fullwidth full stop
+  -- 注：U+FF0E ． Fullwidth full stop 曾误列于此（移植自 REF 的表）。它是**句末标点**，
+  -- 语义等同 `。`：能落行尾、不能落行首。留在这张「其后不可换行」的表里（邻居全是左括号、
+  -- 开引号与货币符号），加上 DECISIONS 第 9 节又把它补进了 forbit_break_before，
+  -- 结果它两表都在 —— 既不能落行首又不能落行尾，折行必然破其中一条，且 char_attr 的判定
+  -- 顺序（after 先于 before）把它归成了「开括号类」。已移除，分类由 forbit_break_before 承担。
   [0xff3b] = true, -- ［ Fullwidth left square bracket
   [0xff5b] = true, -- ｛ Fullwidth left curly bracket
   [0xffe1] = true, -- ￡ Fullwidth pound sign
