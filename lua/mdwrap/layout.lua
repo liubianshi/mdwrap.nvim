@@ -429,13 +429,12 @@ function M.wrap(atoms, opts)
   -- 严格中文模式：仅此模式下行尾必须落在标点上（punct_far / acceptable_end 才有意义）。
   local strict_end = punct_only and (not wrap_sentence)
 
-  -- ---- 逐行状态容器 st ----
+  -- ---- 逐行状态容器 st：主线与前瞻各持一个 ----
   -- 这些量（avail / cum / k / min_tier / 两个标点候选）逐行变化，改版前是 `M.wrap` 的
-  -- upvalue，由主循环与 `settle` 共享。抽出 `fit_line` 后这套状态必须**可以有第二个实例**：
-  -- 下一步要让 `settle` 在中途再跑一遍 `fit_line` 做前瞻，而它若写同一组 upvalue，当前行的
-  -- 状态会被当场清掉——`settle` 在那之后还要读 `st.k`（`overflow_from(st.k > e and st.k or e)`），
-  -- `merge_short_tail` 还要读 `st.avail` / `st.min_tier`。实例**在此一次性分配**：
-  -- `st.cum` 的表随之复用，逐行只清
+  -- upvalue，由主循环与 `settle` 共享。而 `settle` 要在**中途**再跑一遍 `fit_line` 做前瞻，
+  -- 前瞻若写同一组 upvalue，当前行的状态会被当场清掉——`settle` 在前瞻之后还要读 `st.k`
+  -- （`overflow_from(st.k > e and st.k or e)`），`merge_short_tail` 还要读 `st.avail` /
+  -- `st.min_tier`。故改为两个实例，**在此一次性分配**：`st.cum` 的表随之复用，逐行只清
   -- 上次填过的区间（cum_lo..cum_hi），不重建表，避免逐行制造垃圾。
   local function new_state()
     return {
@@ -450,7 +449,7 @@ function M.wrap(atoms, opts)
       settleable = false, -- 本行落点是否经回落收尾（见 fit_line 步骤 5）
     }
   end
-  local st_main = new_state()
+  local st_main, st_la = new_state(), new_state()
 
   -- 下面的谓词定义在逐行 while 循环**之外**（LuaJIT 下在循环内建闭包会触发 FNEW NYI）。
   -- 改版前它们经 `min_tier` 这个 upvalue 感知当前行的档位；现在 `min_tier` 随 st 走，
@@ -690,12 +689,23 @@ function M.wrap(atoms, opts)
     --   * 回落后下一行放得下（不超宽）→ 回落是纯赚，短行换来的是一个正常行；
     --   * 回落后下一行照样超宽   → 回落只是在超宽行前面多切一刀短行，两头都坏，宁可溢出。
     --
-    -- 拿百分比阈值去猜短行必然两头不讨好：50% 会把「48 列 / 100 列可用宽 + 下一行 73 列」
-    -- 这种纯赚的回落误判成溢出，而再调低又救不了下一个反例。
+    -- 「下一行会不会超宽」这个量**过去根本没算过**，只拿落点的短去猜：`cum[fallback] * 4 >= avail`。
+    -- 拿百分比阈值去猜必然两头不讨好：1/2 会把「48 列 / 100 列可用宽 + 下一行 73 列」这种纯赚
+    -- 的回落误判成溢出（用户报过的 bug），调到 1/4 救回了它，但已知反例上只剩 10% 余量，
+    -- 再来一个反例就又得调。当初放弃精确前瞻的理由是「准确的前瞻要把整条档位阶梯复制一遍才
+    -- 算得准」——**那个理由已经消除：不复制阶梯，把阶梯抽成 `fit_line` 调用它。**
+    -- 它同时正面解决了当时用 `legal_end` 近似前瞻的失败：`legal_end` 按定义跳过盘古空格
+    -- （`adm < TIER_ATOMIC` 即 false），会误判 golden 44 第 3 行那种「靠第二档放开盘古空格才
+    -- 断得开」的下一行；`fit_line` 跑的是真阶梯，不是它的近似。详见 DECISIONS 第 17 节。
+    --
+    -- **终止性**：前瞻用独立的 `st_la`，且 `fit_line` 不经 `settle`，故深度恒为 1。
+    -- **开销**：每行至多一次前瞻、每次 O(下一行 token 数)，全段累计 O(m)。
+    -- 续行可用宽按 `avail_rest` 记账（本行可能是首行，`st.avail` 未必等于续行的可用宽）。
     local fallback = (qual[e] > LV_NORMAL) and e or st.punct_far
-    local c = st.cum[fallback]
-    if c and c * 4 >= st.avail then return fallback end
-    return overflow_from(st.k > e and st.k or e)
+    if fallback >= m then return fallback end -- 回落即落到段尾，没有「下一行」可谈
+    local _, _, overflows = fit_line(st_la, fallback + 1, avail_rest)
+    if not overflows then return fallback end   -- 回落纯赚
+    return overflow_from(st.k > e and st.k or e) -- 回落只是在超宽行前多切一刀
   end
 
   --- 短尾巴并入：断点之后若只剩一小截就到句末，把那一截并进本行，宁可有限超宽。
