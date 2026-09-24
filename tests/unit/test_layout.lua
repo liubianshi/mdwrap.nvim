@@ -291,6 +291,71 @@ check_tri("tier ZWSP 恒可断", gap_at("甲\226\128\139乙", 1), tri(TIER.FREE,
 check_tri("tier ZWSP 高于括号锁定", gap_at("甲\226\128\139乙", 1, { [2] = true }), tri(TIER.FREE, LV.NORMAL, true))
 check_tri("tier 括号锁定内部不可断", gap_at("甲乙", 1, { [2] = true }), tri(TIER.NONE, LV.NORMAL, true))
 
+
+-- ============================================================
+-- 出口收尾 settle：严格模式下六个出口共用的行尾下限
+-- ------------------------------------------------------------
+-- 全部断言只在 cjk_break_at_punct_only=true 且 wrap_sentence=false（strict_end）下有意义：
+-- settle 的第一行就是「非严格模式原样返回」。
+-- ============================================================
+
+local STRICT = function(w) return { width = w, cjk_break_at_punct_only = true } end
+
+-- ③ 拟合区内的标点候选都没过 allow_c 下限，且落点**极短**（不足半个可用宽）：宁可整行
+-- 溢出，也不吐出一个 6 列的行后面跟一个 76 列的行——那是两头都坏。
+check("settle ③ 极短落点改为溢出",
+  wrap("首先，经济合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化趋势。", STRICT(40)),
+  { "首先，经济合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化趋势。" })
+
+-- 同一条路径、同一个 allow_c，落点只是**略短**（24 / 40 可用宽）：溢出的代价更大，保留短行。
+-- 这条与上一条的唯一差别就是 cum，是「极短才溢出」这道分界存在的理由。
+check("settle 略短落点保留（不溢出）",
+  wrap("各方普遍以补贴争取项目，而经济合作与发展组织持续跟踪各成员实施的产业补贴规模。", STRICT(40)),
+  { "各方普遍以补贴争取项目，", "而经济合作与发展组织持续跟踪各成员实施的产业补贴规模。" })
+
+-- ④′ 溢出扫描找的是「下一个**合法行尾**」而非「下一个可断点」：盘古空格被跳过，
+-- 英文词不再被单独甩成一行，行尾也不再停在汉字上。
+check("settle ④′ 溢出跳过盘古空格",
+  wrap("区域内各经济体近年来陆续出台的产业扶持措施 APEC 已作系统梳理。", STRICT(20)),
+  { "区域内各经济体近年来陆续出台的产业扶持措施 APEC 已作系统梳理。" })
+
+-- T3 的另一岔：拟合区内**一个标点候选都没有** → 维持现状，落在 atomic 边界上
+-- （DECISIONS「atomic 边界恒可断」；07/09/11/34/44 全靠这一岔不变）。
+check("settle 零标点候选维持现状（落在 atomic 边界）", layout.wrap({
+  { text = "区", width = 2, class = "cjk" }, { text = "域", width = 2, class = "cjk" },
+  { text = "内", width = 2, class = "cjk" }, { text = "各", width = 2, class = "cjk" },
+  { text = "经", width = 2, class = "cjk" }, { text = "济", width = 2, class = "cjk" },
+  { text = "体", width = 2, class = "cjk" }, { text = "近", width = 2, class = "cjk" },
+  { text = "年", width = 2, class = "cjk" }, { text = "来", width = 2, class = "cjk" },
+  { text = "陆", width = 2, class = "cjk" }, { text = "续", width = 2, class = "cjk" },
+  { text = "[说明](a.md)", width = 12, class = "atomic", atomic_kind = "link" },
+  { text = "已", width = 2, class = "cjk" }, { text = "作", width = 2, class = "cjk" },
+  { text = "系", width = 2, class = "cjk" }, { text = "统", width = 2, class = "cjk" },
+  { text = "梳", width = 2, class = "cjk" }, { text = "理", width = 2, class = "cjk" },
+  { text = "。", width = 2, class = "punct_no_break_before" },
+}, STRICT(30)), { "区域内各经济体近年来陆续", "[说明](a.md)已作系统梳理。" })
+
+-- **不变式一：ZWSP 落点绝不被回落覆盖。** ZWSP 的 qual 是 normal，若合法性检查顺手用了
+-- 「可断性」口径，这个 10 列的落点会被判不合法而改成整行溢出，用户手工标记当场失效。
+check("settle 不变式一：ZWSP 落点不被覆盖",
+  wrap("首先，经济\226\128\139合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化趋势。", STRICT(40)),
+  { "首先，经济\226\128\139", "合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化趋势。" })
+
+-- **不变式二：句级标点不设短行下限。** sent 分支排在回落出口之前，且 settle 对句级落点
+-- 直接放行——6 列的「首先。」必须保留，否则回落档的下限会间接破掉这条裁定。
+check("settle 不变式二：句级标点无下限",
+  wrap("首先。经济合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化。", STRICT(40)),
+  { "首先。", "经济合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化。" })
+
+-- settle 只在 strict_end 下生效：另外两种模式按各自语义填满，一字不改。
+check("settle wrap_sentence=true 不受影响",
+  wrap("首先，经济合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化趋势。",
+    { width = 40, cjk_break_at_punct_only = true, wrap_sentence = true }),
+  { "首先，", "经济合作与发展组织在过去十年间持续跟踪各", "成员实施的产业补贴规模结构变化趋势。" })
+check("settle 非严格模式不受影响",
+  wrap("首先，经济合作与发展组织在过去十年间持续跟踪各成员实施的产业补贴规模结构变化趋势。", { width = 40 }),
+  { "首先，经济合作与发展组织在过去十年间持续", "跟踪各成员实施的产业补贴规模结构变化趋势。" })
+
 -- ---------- 汇总 ----------
 print(string.format("\n%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
