@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-24
+
 ### Changed
 
 - **断点判定重构为三个静态数组（`adm` / `qual` / `wide`），零行为变更。** `layout.wrap` 内此前有
