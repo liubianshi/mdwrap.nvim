@@ -9,6 +9,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`wrap_sentence = true` 现在是真正的「按宽填满」（Vim `gww` 的语义）**：该模式下
+  `cjk_break_at_punct_only` **强制失效**。两者在中文里语义互斥——中文没有词边界，「只在标点
+  断」意味着行长完全由标点位置决定，填满无从谈起。此前默认组合
+  （`wrap_sentence = true` + `cjk_break_at_punct_only = true`）折出 20/40/22/28/40/42/18
+  这种参差行长，现为 40/42/40/40/40/8。断点处的约束不变，仍由禁则保证：英文单词不在内部断，
+  `。，」》` 等不落行首（即不会「在句号前面断」）；盘古空格在此模式下与普通空格同等对待
+  （不可断的唯一替代是汉字间硬断，那更糟）。
+  影响面为零：唯一使用 `wrap_sentence` 的 golden 24 本就注入了 `cjk_break_at_punct_only = false`。
+  新增 golden `49-wrap-sentence-fill` 固化填满语义。
+
 ## [0.4.0] - 2026-09-24
 
 ### Changed

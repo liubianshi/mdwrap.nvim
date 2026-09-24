@@ -445,3 +445,22 @@ PUSH 一路退到行首仍找不到可断点，旧代码 `endj = (e >= i) and e 
   打出来过）。故 P1 只钉内容、忽略空格，空格的正确性交给 P4 与 golden。
 - width 下限取 20：更窄时 `avail` 小到容不下一个合法断点，禁则被迫让路是 4.3.6 允许的降级。
 - 本机 5 个 seed × 86,400 次 `wrap` 全绿；seed 固定，CI 可复现，`MDWRAP_PROP_CASES` 可加大深跑。
+
+
+## 16. `wrap_sentence = true` 是 gww：该模式下 `cjk_break_at_punct_only` 强制失效
+
+- **背景**：用户澄清 `wrap_sentence` 的期望语义——「类似 `gww`，尽量保持每行长度一致，
+  只是在断行处考虑一些特殊情况，比如不要在一个英文单词内部断行，不要在句号前面断行」。
+- **实测的冲突**：默认组合（`wrap_sentence=true` + `cjk_break_at_punct_only=true`）在 width=40
+  下折出 `20/40/22/28/40/42/18`，行长极不一致；把后者置 false 才得到 `40/42/40/40/40/8`。
+- **根因：两个开关在中文里语义互斥。** `cjk_break_at_punct_only=true` 禁止汉字间断，而中文
+  没有词边界——只在标点断就意味着行长完全由标点位置决定，「填满」无从谈起。
+- **裁定**：`wrap_sentence=true` 时 `cjk_break_at_punct_only` 强制失效
+  （`punct_only = opts.cjk_break_at_punct_only and not wrap_sentence`），单个开关即可拿到
+  gww 效果。用户列举的两条断点约束本就由禁则保证，不受影响：英文单词是一个 token，
+  不会在内部断；`。，」》` 在 `forbit_break_before`，不落行首即「不在句号前面断」。
+- **盘古空格在此模式下与普通空格同等对待**（收窄第 9 节裁定的作用域到「句末优先模式」）：
+  填满模式下它若不可断，那种位置的唯一替代是汉字间硬断（`2023 年|间`），比在空格处断更糟。
+- **影响面为零**：唯一使用 `wrap_sentence` 的 golden 24 本就注入了 `cjk_break_at_punct_only=false`，
+  其余 48 个用例都不涉及该开关。新增 `49-wrap-sentence-fill` 固化填满语义
+  （含盘古空格与 CJK/拉丁混排两段）。

@@ -337,7 +337,14 @@ function M.wrap(atoms, opts)
   local prefix_first = opts.prefix_first or ""
   local prefix_rest = opts.prefix_rest or ""
   local wrap_sentence = opts.wrap_sentence or false
-  local punct_only = opts.cjk_break_at_punct_only or false
+  -- `wrap_sentence=true` 是「按宽填满、行长尽量一致」（Vim `gww` 的语义），而
+  -- `cjk_break_at_punct_only` 是「只在标点处断」。**这两条在中文里语义互斥**：中文没有词
+  -- 边界，只在标点断就意味着行长完全由标点位置决定，填满无从谈起——实测默认组合折出
+  -- 20/40/22/28/40/42/18 这种参差行长，正是它的表现。故填满模式下强制放开字间断，
+  -- 让 `wrap_sentence` 单个开关就能拿到 gww 效果（用户裁定）。
+  -- 断点处的约束不受影响，仍由禁则保证：英文单词是一个 token，不会在内部断；
+  -- `。，」》` 等不落行首，即不会「在句号前面断」。
+  local punct_only = (opts.cjk_break_at_punct_only or false) and not wrap_sentence
   local bracket_as_unit = opts.bracket_as_unit or false
   local width_fn = opts.width_fn or function(s) return #s end
 
