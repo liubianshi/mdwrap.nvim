@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-24
+
 ### Changed
 
 - **`wrap_sentence = true` 现在是真正的「按宽填满」（Vim `gww` 的语义）**：该模式下
