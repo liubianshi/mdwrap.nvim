@@ -46,6 +46,15 @@
   全模式矩阵下 86,400 对输出 **0 差异**。基准（少标点中文 3000 次 `wrap`）三种模式各快 4–5%
   （省掉的是逐行重建 `cum` 的垃圾）。
 
+### Added
+
+- **`tests/run_typecheck.sh` 并入 `luacheck lua/`**（与 CI 同一命令、同一 `.luacheckrc`），
+  排在 `lua-language-server` **之前**——理由与既有的纯模块冒烟一致：依赖少的关卡先跑，
+  不该被 LLS 装没装挡住。**这一道是软判断**：未安装则打印 `SKIPPED` 并继续，不让本机缺一个
+  lint 工具挡掉另外两道护栏；跳过时末行如实写明（`all checks passed（luacheck 未安装，
+  已跳过；CI 仍会跑）`），不含糊成裸的 `all checks passed`。
+  动机是下面那条 Fixed：两个死函数正因本机没有这道关卡而漏网。
+
 ### Fixed
 
 - **删除两个死函数。** `overflows_next_line`（引入于 `02dd062`）与 `needs_punct_end` 全仓零引用。

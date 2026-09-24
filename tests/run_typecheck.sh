@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# 本地一键：纯模块硬约束冒烟 + 领域类型检查，两道护栏合一。
+# 本地一键：纯模块硬约束冒烟 + 静态 lint + 领域类型检查，三道护栏合一。
 #   A) chardata / layout / spacing / table_align 在 bare luajit 下独立加载——「禁止 require vim」
 #      LuaLS 无法表达，只能靠这道冒烟把守（真把 vim 拖进纯模块，require 链即崩）。
 #      **先跑**：它是该硬约束的唯一护栏，依赖最少（仅 luajit），不应被 LLS 是否安装挡住。
-#   B) lua-language-server --check 静态校验领域类型（注入真实 $VIMRUNTIME，
+#   B) luacheck lua/——与 CI 同一命令、同一 .luacheckrc。同样排在 LLS 之前，理由同上：
+#      它只依赖 luacheck 自身，不该被 LLS 装没装挡住。**这一道是软判断**（见下）。
+#   C) lua-language-server --check 静态校验领域类型（注入真实 $VIMRUNTIME，
 #      使 vim.* 与 TSNode 等获得真实定义，目标是抓**我们自己**的 mdwrap.* 类型 bug）。
 #
 # 判定：本机 lua-language-server 3.18.2-dev 实测**不**生成 check.json（计划原拟以其存在与否
@@ -33,7 +35,30 @@ for mod in chardata layout spacing table_align ignore; do
 done
 
 # ---------------------------------------------------------------------------
-# B) 领域类型检查（lua-language-server --check）
+# B) 静态 lint（luacheck）——软判断：未安装则跳过，不失败
+# ---------------------------------------------------------------------------
+# 与 CI（.github/workflows/ci.yml 的 `luacheck lua/`）同一命令、同一 .luacheckrc，两边不分叉。
+#
+# 为什么是**软**判断：luacheck 不是本仓的硬约束护栏（A 才是），本机缺它不该把 A 与 C 一起挡掉；
+# CI 侧是硬关卡，最终口径由它兜底。
+# 为什么仍要在本地跑：v0.5.0 里两个零引用的死函数（needs_punct_end / overflows_next_line）
+# 正是因本机没装它而漏网的——LLS 也报 unused-local，但混在别的诊断里容易被放过，
+# 而 luacheck 以非零退出码明示。跳过时末行会如实写明，不会谎报 "all checks passed"。
+LUACHECK="$(command -v luacheck || true)"
+LINT_SKIPPED=0
+if [[ -z "$LUACHECK" ]]; then
+  LINT_SKIPPED=1
+  echo "== luacheck: SKIPPED（未安装；Arch: pacman -S luacheck，通用: luarocks install luacheck）=="
+else
+  echo "== luacheck lua/ =="
+  if ! "$LUACHECK" lua/; then
+    echo "luacheck FAILED (see warnings above)" >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# C) 领域类型检查（lua-language-server --check）
 # ---------------------------------------------------------------------------
 LLS="$(command -v lua-language-server || true)"
 if [[ -z "$LLS" ]]; then
@@ -72,4 +97,9 @@ if [[ "$rc" -ne 0 || "$count" -gt 0 ]]; then
 fi
 echo "type check passed (no diagnostics)."
 
-echo "all checks passed."
+# 跳过了 lint 就如实说，不含糊成 "all checks passed"——那会让人以为 CI 的 pure-lua 关卡也过了。
+if [[ "$LINT_SKIPPED" -eq 1 ]]; then
+  echo "all checks passed（luacheck 未安装，已跳过；CI 仍会跑）。"
+else
+  echo "all checks passed."
+fi
