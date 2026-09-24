@@ -348,6 +348,10 @@ function M.wrap(atoms, opts)
   local bracket_as_unit = opts.bracket_as_unit or false
   local width_fn = opts.width_fn or function(s) return #s end
 
+  -- 续行的可用宽：括号组锁定与前瞻都按它记账（首行的 avail 可能不同，不能拿来代替）。
+  local avail_rest = width - (opts.prefix_rest_width or width_fn(prefix_rest))
+  if avail_rest < 1 then avail_rest = 1 end
+
   -- 短行容忍度（4.3.4），以配置 width 为基准。
   -- 句级标点（sentence）不设短行下限：行尾力求落在句末，「一句一行」优先于填满（见 DECISIONS）。
   -- 冒号（colon）与逗号（clause）保留 allow_c 下限，避免断点靠行首时把行切得过短。
@@ -393,8 +397,7 @@ function M.wrap(atoms, opts)
   -- 回退内部断。半角括号紧贴内容时落在 word 原子首/尾字符，故按 token 文本首/末字符判定。
   local locked_gap = {}
   if bracket_as_unit then
-    local avail_full = width - (opts.prefix_rest_width or width_fn(prefix_rest))
-    if avail_full < 1 then avail_full = 1 end
+    local avail_full = avail_rest
     local stack = {}
     for idx = 1, m do
       local txt = tokens[idx].text
@@ -423,47 +426,48 @@ function M.wrap(atoms, opts)
   -- ---- 三个静态数组：整段算一次，逐行只查表（定义见本文件「静态断点档位」一节）----
   local adm, qual, wide = compute_tiers(tokens, gap, zwsp_after, locked_gap, m)
 
-  -- 严格中文模式：仅此模式下行尾必须落在标点上（punct_far / needs_punct_end 才有意义）。
+  -- 严格中文模式：仅此模式下行尾必须落在标点上（punct_far / acceptable_end 才有意义）。
   local strict_end = punct_only and (not wrap_sentence)
 
-  -- 本行准入档（每行循环开始处重设）。这是**唯一**的逐行断点状态：改版前的
-  -- allow_cjk_cur / allow_pangu_cur 两个布尔开关本质上就是它的一种笨拙编码。
-  local min_tier = punct_only and TIER_ATOMIC or TIER_HAN
+  -- ---- 逐行状态容器 st ----
+  -- 这些量（avail / cum / k / min_tier / 两个标点候选）逐行变化，改版前是 `M.wrap` 的
+  -- upvalue，由主循环与 `settle` 共享。抽出 `fit_line` 后这套状态必须**可以有第二个实例**：
+  -- 下一步要让 `settle` 在中途再跑一遍 `fit_line` 做前瞻，而它若写同一组 upvalue，当前行的
+  -- 状态会被当场清掉——`settle` 在那之后还要读 `st.k`（`overflow_from(st.k > e and st.k or e)`），
+  -- `merge_short_tail` 还要读 `st.avail` / `st.min_tier`。实例**在此一次性分配**：
+  -- `st.cum` 的表随之复用，逐行只清
+  -- 上次填过的区间（cum_lo..cum_hi），不重建表，避免逐行制造垃圾。
+  local function new_state()
+    return {
+      avail = 0,        -- 本行可用宽（= width − 前缀宽）
+      cum = {},         -- cum[t] = 自行首累计到 token t 的宽（含间隙空格）
+      cum_lo = 1,       -- cum 上次填过的区间，仅用于复用该表时精确清空
+      cum_hi = 0,
+      k = 0,            -- 贪心拟合区的末 token
+      min_tier = 0,     -- 本行准入档
+      punct_far = nil,  -- 拟合区内最远的标点候选（无短行下限）
+      punct_ok = nil,   -- 其中过了 allow_c 短行下限的最远者
+      settleable = false, -- 本行落点是否经回落收尾（见 fit_line 步骤 5）
+    }
+  end
+  local st_main = new_state()
 
-  -- 下面三个谓词定义在逐行 while 循环**之外**（LuaJIT 下在循环内建闭包会触发 FNEW NYI），
-  -- 经 min_tier 这个 upvalue 感知当前行的档位。三者与改版前的三套判定机械等价：
-  --   after_breakable(t) ≡ gap_breakable(t+1)   两个许可开关换成档位阈值
-  --   punct_break(t)     ≡ level_of(t) ~= "normal"（段尾亦算）
-  --   needs_punct_end(t) ≡ 涉中文且不落标点
+  -- 下面的谓词定义在逐行 while 循环**之外**（LuaJIT 下在循环内建闭包会触发 FNEW NYI）。
+  -- 改版前它们经 `min_tier` 这个 upvalue 感知当前行的档位；现在 `min_tier` 随 st 走，
+  -- 故显式传参——前瞻与主线的档位各自独立，共享 upvalue 会串档。
 
-  --- token t 之「后」的间隙在本行档位下是否可断（t >= m 为段尾，恒可断）。
-  local function after_breakable(t)
+  --- token t 之「后」的间隙在给定档位下是否可断（t >= m 为段尾，恒可断）。
+  --- 与改版前的 `gap_breakable(t+1)` 机械等价：两个许可开关换成档位阈值。
+  local function after_breakable(t, min_tier)
     if t >= m then return true end
     return adm[t] >= min_tier
   end
 
   --- 断在 t 之后，行尾是否落在标点上（句末／冒号／逗号／顿号，含半角句读；段尾亦算）。
+  --- 与改版前的 `level_of(t) ~= "normal"` 机械等价；不看档位，故无 min_tier 参数。
   local function punct_break(t)
     return t >= m or qual[t] > 0
   end
-
-  --- 严格中文模式下，行尾不得停在此处、须回落到标点断点：该间隙涉及中文（两侧任一为
-  --- 汉字或全角标点，盘古间隙按定义必有一侧为宽字符）且不落在标点上。纯拉丁语境的断点
-  --- （英文词间空格、英文与链接／代码之间）不涉中文，照常可作行尾。
-  ---
-  --- **不变式一：合法性只看 qual / wide，绝不看 adm。** ZWSP 落点的 qual 是 LV_NORMAL，
-  --- 若这里顺手改用「可断性」口径，CJK + ZWSP 的落点会被判为不合法而遭回落覆盖，
-  --- 「ZWSP 是用户手工标记、绝不被覆盖」这条裁定当场就破。
-  local function needs_punct_end(t)
-    return strict_end and t < m and wide[t] and qual[t] == 0
-  end
-
-  -- ---- 出口收尾：六个决定 endj 的出口共用同一套下限 ----
-  -- 改版前只有「贪心点 k」与「PUSH」两个出口接了回落，溢出、PULL 两个没接，且回落路径
-  -- 本身不设短行下限——DECISIONS 末尾的待办 ①②③ 与审查发现的 ④′ 全是这一个形状。
-  -- 逐行变化的量（avail / cum / k / 两个标点候选）提到 while 循环外作 upvalue，
-  -- 使下面三个函数只定义一次（LuaJIT 下在循环内建闭包会触发 FNEW NYI）。
-  local avail, cum, k, punct_far, punct_ok
 
   --- 溢出扫描的「合法行尾」口径（用户裁定）：停在段尾、ZWSP、标点、不涉中文的断点，或
   --- atomic 边界；跳过汉字间与盘古空格（含上面降档的 CJK↔atomic 手写空格），也跳过
@@ -471,6 +475,10 @@ function M.wrap(atoms, opts)
   --- **停在 atomic 边界这一条守住了 DECISIONS「含 atomic 的行不会溢出，在 atomic 边界断」**
   --- ——一律扫到标点会推翻那条裁定的一角。改版前这里扫的是「下一个可断点」，且进入该分支
   --- 时盘古档已放开，于是会停在盘古空格上，把一个英文词单独甩成一行。
+  ---
+  --- **不变式一：合法性只看 qual / wide / zwsp，绝不看当前行的档位。** ZWSP 落点的 qual 是
+  --- LV_NORMAL，若这里顺手改用「可断性」口径，CJK + ZWSP 的落点会被判为不合法而遭回落覆盖，
+  --- 「ZWSP 是用户手工标记、绝不被覆盖」这条裁定当场就破。
   local function legal_end(t)
     if t >= m then return true end                 -- 段尾
     if zwsp_after[t] then return true end          -- 用户手工断点标记，恒合法
@@ -486,62 +494,208 @@ function M.wrap(atoms, opts)
     return t
   end
 
+  -- ----------------------------------------------------------------------------
+  -- fit_line：按档位阶梯定出一行的**原始落点**
+  -- ----------------------------------------------------------------------------
+  --
+  -- 它是 `M.wrap` 逐行循环的步骤 2–5（贪心拟合区 → 定准入档 → 扫候选 → if 链定 endj），
+  -- **不含回落（settle）与短尾巴并入（merge_short_tail）**。这条边界不是随手划的：
+  -- `settle` 要反过来调用本函数做前瞻，若前瞻走的这条路径自身也经 `settle`，递归深度就不
+  -- 再有界。抽掉那两步之后，前瞻的深度恒为 1。
+  --
+  -- 状态全部写入调用方传入的 `st`，绝不碰其他实例——主线与前瞻各持一个。
+  --
+  ---@param st table       逐行状态容器（new_state 产出）
+  ---@param start integer  本行起始 token 下标
+  ---@param avail_in integer 本行可用宽
+  ---@return integer endj_raw  原始落点（未经回落／并入）
+  ---@return integer line_width 落点处的行宽
+  ---@return boolean overflowed 行宽是否超出 avail_in
+  local function fit_line(st, start, avail_in)
+    st.avail = avail_in
+    local cum = st.cum
+    for t = st.cum_lo, st.cum_hi do cum[t] = nil end -- 复用表：只清上次填过的区间
+    st.cum_lo, st.cum_hi = start, start - 1
+
+    -- 2) 贪心拟合区 start..k（累计宽 ≤ avail_in），记录每 token 处累计宽
+    local w = 0
+    local k = start - 1
+    do
+      local t = start
+      while t <= m do
+        local sp = (t > start and gmeta(t).space) and 1 or 0
+        local nw = w + sp + tokens[t].width
+        if nw > avail_in and t > start then break end
+        w, cum[t], k = nw, nw, t
+        t = t + 1
+      end
+    end
+    st.k, st.cum_hi = k, k
+
+    if k < start then
+      -- 单 token 自身超宽（长 URL / 超长代码）：独占一行，允许超宽（4.3.6）。
+      -- 它**没有可选落点**，故不定档、不扫候选、不经回落；`settleable = false` 即此意。
+      -- 主线的这一支与改版前的 `k < i` 分支逐字对应；前瞻撞上它则如实报「超宽」。
+      st.min_tier = punct_only and TIER_ATOMIC or TIER_HAN
+      st.punct_far, st.punct_ok, st.settleable = nil, nil, false
+      local tw = tokens[start].width
+      return start, tw, tw > avail_in
+    end
+
+    -- 3) 定本行准入档：拟合区 [start,k] 内的最高静态档位一趟扫出，即可定档——
+    --    「区间内按某口径有无断点」等价于「区间最高档 >= 该口径阈值」。严格模式的三档阶梯：
+    --      第一档 TIER_ATOMIC：只认 ZWSP／纯拉丁或涉中文的普通空格／全角标点旁／atomic 边界；
+    --      第二档 TIER_PANGU ：拟合区内一个都没有时放开盘古空格（仍禁汉字间硬断）；
+    --      第三档 TIER_HAN   ：仍没有时按 wrap_sentence 分流——填满模式放开汉字间硬断，
+    --                          句末优先模式改为整段溢出到下一个标点，绝不在非标点处断。
+    local best_tier = 0
+    for tt = start, k do
+      local tier = (tt >= m) and TIER_FREE or adm[tt] -- 段尾恒可断
+      if tier > best_tier then best_tier = tier end
+    end
+    local min_tier = punct_only and TIER_ATOMIC or TIER_HAN
+    local overflow_to_punct = false
+    if punct_only and best_tier < TIER_ATOMIC then
+      min_tier = TIER_PANGU
+      if best_tier < TIER_PANGU then
+        if wrap_sentence then min_tier = TIER_HAN else overflow_to_punct = true end
+      end
+    end
+    st.min_tier = min_tier
+
+    -- 4) 单趟扫描取候选：ZWSP（最高，保留）＞ sentence ＞ colon ＞ clause（4.3.4）。
+    --    **按 qual 精确分槽**：顿号 LV_SERIES 不进 clause 槽——它若白捡 allow_c 那条短行
+    --    容忍路径，行为就变了；它只在贪心填满到它、或作 punct_far 回落点时才断。
+    local zbest, sent, colon, clause
+    local punct_far, punct_ok
+    for tt = start, k do
+      if after_breakable(tt, min_tier) then
+        if zwsp_after[tt] then zbest = tt end -- 取拟合区内最远的 ZWSP 断点
+        -- 最远标点断点（无短行下限，供回落用）；非严格模式下无人消费，不必算。
+        if strict_end and punct_break(tt) then
+          punct_far = tt
+          -- 过了 allow_c 短行下限的最远标点候选：回落的首选落点。
+          if cum[tt] >= avail_in - allow_c then punct_ok = tt end
+        end
+        local q = qual[tt]
+        if q == LV_SENTENCE then
+          sent = tt -- 句末对齐：拟合区内任意句级标点皆可断，取最远（不设短行下限）
+        elseif q == LV_COLON then
+          -- 冒号「高于逗号、低于句号」：优先级由下面 if 链的顺序保证；与逗号一样保留
+          -- allow_c 短行下限，避免冒号靠行首时断出过短的行（用户裁定）。
+          if cum[tt] >= avail_in - allow_c then colon = tt end
+        elseif q == LV_CLAUSE then
+          if cum[tt] >= avail_in - allow_c then clause = tt end
+        end
+      end
+    end
+    st.punct_far, st.punct_ok = punct_far, punct_ok
+
+    -- 5) 选择。**不变式二：这条 if 链的形状与优先级不得重排。** zbest / sent 两个分支
+    --    排在贪心与 PULL/PUSH 之前，是「走到回落出口时拟合区内必定已无 ZWSP、无句末
+    --    候选」的保证；一旦重排，「ZWSP 绝不被覆盖」与「句级标点不设短行下限」两条裁定
+    --    就会被回落路径的下限间接破坏。
+    --
+    --    `settleable` 标出这个出口要不要经回落收尾。改版前它是「哪几个分支写了 settle(...)」
+    --    这一事实的隐式编码；抽成函数后必须显式回传，否则调用方无从分辨。
+    local endj, settleable
+    if overflow_to_punct then
+      -- 无标点超长子句 + 句末优先：整段溢出到下一个**合法行尾**（或段尾），绝不在非标点
+      -- 处断。这里扫的不再是「下一个可断点」——那会停在盘古空格上。
+      endj, settleable = overflow_from(k), false
+    elseif zbest then
+      endj, settleable = zbest, false -- ZWSP 是用户手工标记，绝不被回落覆盖
+    elseif (not wrap_sentence) and sent then
+      endj, settleable = sent, true
+    elseif (not wrap_sentence) and colon then
+      endj, settleable = colon, true
+    elseif (not wrap_sentence) and clause then
+      endj, settleable = clause, true
+    elseif after_breakable(k, min_tier) then
+      endj, settleable = k, true -- 普通贪心断点
+    else
+      -- 6) 拟合边界落在不可断间隙：按原因分流（4.3.2）
+      local next_no_before = (k + 1 <= m) and (not can_break_before(tokens[k + 1]))
+      if next_no_before then
+        -- PULL：禁前断标点拉回本行（溢出一个标点位）
+        local e = k
+        while e < m and not after_breakable(e, min_tier) and not can_break_before(tokens[e + 1]) do
+          e = e + 1
+        end
+        endj, settleable = e, true
+      else
+        -- PUSH：禁后断标点回退，推到下一行
+        local e = k - 1
+        while e > start and not after_breakable(e, min_tier) do e = e - 1 end
+        if e >= start and after_breakable(e, min_tier) then
+          endj, settleable = e, true
+        else
+          -- 退无可退：start 之后紧跟的就是禁则间隙（实例：行首是「《」，其后是一个比整行
+          -- 还宽的 URL）。此时让 start 独占一行会把禁后断标点留在行尾，禁则当场破——
+          -- 判据是「退回去的落点可不可断」，不是「退没退回到 start」。改为向前拉到第一个
+          -- 可断处，宁可这一行超宽（4.3.6 允许），也不让 `《「（` 落在行尾。
+          local t = start
+          while t < m and not after_breakable(t, min_tier) do t = t + 1 end
+          endj, settleable = t, false
+        end
+      end
+    end
+    st.settleable = settleable
+
+    -- 落点处的行宽：拟合区内的落点直接查 cum；区外的（PULL / 溢出）自 k 续量。
+    local lw = cum[endj]
+    if not lw then
+      lw = cum[k] or 0
+      for t = k + 1, endj do
+        if t > start and gmeta(t).space then lw = lw + 1 end
+        lw = lw + tokens[t].width
+      end
+    end
+    return endj, lw, lw > avail_in
+  end
+
+  -- ---- 出口收尾：六个决定 endj 的出口共用同一套下限 ----
+  -- 改版前只有「贪心点 k」与「PUSH」两个出口接了回落，溢出、PULL 两个没接，且回落路径
+  -- 本身不设短行下限——DECISIONS 末尾的待办 ①②③ 与审查发现的 ④′ 全是这一个形状。
+
   --- 落点 e 在严格模式下是否够格作行尾：既要落在合法处，又要让行不至于过短。
-  local function acceptable_end(e)
+  local function acceptable_end(st, e)
     if e >= m then return true end
     local q = qual[e]
     if q == LV_NORMAL then return not wide[e] end -- 非标点落点：只有不涉中文才够格
     if q == LV_SENTENCE then return true end      -- 句级标点不设短行下限（用户裁定，不得动）
     -- 次级标点（冒号／逗号／顿号）：行不得过短，与 colon / clause 槽同一个 allow_c。
     -- 拟合区外的落点（PULL 已溢出）行本就超宽，无从谈短，直接放行。
-    local c = cum[e]
-    return (c == nil) or c >= avail - allow_c
-  end
-
-  --- 前瞻一步：若本行在 t 之后断开，**下一行**会不会照样超宽？
-  --- 下一行从 t+1 起贪心到第一个合法行尾：装得下即不超宽。段尾之前没有合法行尾时，
-  --- 下一行只能整段溢出，同样记作超宽。
-  --- 续行可用宽按 prefix_rest 记账（本行可能是首行，avail 未必等于续行的可用宽）。
-  local function overflows_next_line(t)
-    local rest = width - (opts.prefix_rest_width or width_fn(prefix_rest))
-    if rest < 1 then rest = 1 end
-    local w2 = 0
-    for tt = t + 1, m do
-      if tt > t + 1 and gmeta(tt).space then w2 = w2 + 1 end
-      w2 = w2 + tokens[tt].width
-      if w2 > rest then return true end   -- 还没走到合法行尾就已经超宽
-      if legal_end(tt) then return false end
-    end
-    return false                           -- 整个剩余部分都装得下
+    local c = st.cum[e]
+    return (c == nil) or c >= st.avail - allow_c
   end
 
   --- 出口收尾。严格模式下落点不够格时，按两种情形分岔（这个分岔是 07/09/11/34/44
   --- 不受影响的**唯一**理由，不可简化为「不够格就溢出」）：
-  ---   * 拟合区内**有**标点候选 → 取最远且过 allow_c 下限者；一个都没过下限 → 溢出到下一个
-  ---     合法行尾（宁可长一行，也不吐出 4 列的行，那是「两头都坏」）；
+  ---   * 拟合区内**有**标点候选 → 取最远且过 allow_c 下限者；一个都没过下限 → 见下面的前瞻；
   ---   * 拟合区内**一个标点候选都没有** → 维持现状，落在最好的排版断点上
   ---     （既有裁定：atomic 边界恒可断）。
-  --- 超宽单 token 出口（k < i）与 ZWSP 出口不经此函数：前者没有可选的落点，后者是用户
-  --- 手工标记，绝不被回落覆盖。
-  local function settle(e)
+  --- 超宽单 token 出口、ZWSP 出口、溢出到标点出口与「退无可退」出口不经此函数
+  --- （`fit_line` 回传的 `settleable == false`）。
+  local function settle(st, e)
     if not strict_end then return e end
-    if acceptable_end(e) then return e end
+    if acceptable_end(st, e) then return e end
     -- PULL 的 walk 可能停在禁则位置（adm == TIER_NONE）：那是禁则刻意为之的落点，不得改写。
     if e < m and adm[e] == TIER_NONE then return e end
-    if not punct_far then return e end            -- 零标点候选：维持现状
-    if punct_ok then return punct_ok end
+    if not st.punct_far then return e end          -- 零标点候选：维持现状
+    if st.punct_ok then return st.punct_ok end
     -- 有标点候选，但一个都没过 allow_c 下限。两条退路：回落到那个偏短的标点，或整行溢出。
     -- **判据不是「落点有多短」，而是「回落之后是不是仍然要吐一个超宽行」**——用户抱怨的
     -- 「两头都坏」是一个复合现象（4 列的行后面跟一个 82 列的行），不是单看短行那一头。
-    -- 拿百分比阈值去猜短行必然两头不讨好：50% 会把「48 列 / 100 列可用宽 + 下一行 73 列」
-    -- 这种纯赚的回落误判成溢出，而再调低又救不了下一个反例。故直接前瞻一步：
     --   * 回落后下一行放得下（不超宽）→ 回落是纯赚，短行换来的是一个正常行；
     --   * 回落后下一行照样超宽   → 回落只是在超宽行前面多切一刀短行，两头都坏，宁可溢出。
-    -- 前瞻每行最多一次，长度不超过下一行的合法断点距离，相对逐行扫描可忽略。
-    local fallback = (qual[e] > LV_NORMAL) and e or punct_far
-    local c = cum[fallback]
-    if c and c * 4 >= avail then return fallback end
-    return overflow_from(k > e and k or e)
+    --
+    -- 拿百分比阈值去猜短行必然两头不讨好：50% 会把「48 列 / 100 列可用宽 + 下一行 73 列」
+    -- 这种纯赚的回落误判成溢出，而再调低又救不了下一个反例。
+    local fallback = (qual[e] > LV_NORMAL) and e or st.punct_far
+    local c = st.cum[fallback]
+    if c and c * 4 >= st.avail then return fallback end
+    return overflow_from(st.k > e and st.k or e)
   end
 
   --- 短尾巴并入：断点之后若只剩一小截就到句末，把那一截并进本行，宁可有限超宽。
@@ -552,23 +706,27 @@ function M.wrap(atoms, opts)
   --- 句号落在 91 列、已在拟合区外，贪心够不着；而「句级标点不设短行下限」又让那 19 列的
   --- 尾巴立刻成行。两条各自正确的规则叠出一个两头都别扭的结果。
   ---
+  --- **`avail/4` 在这里是策略常数，不是近似**（与 `settle` 里换掉的那个阈值性质不同）：
+  --- 它问的是「尾巴够不够短」，而尾巴宽度 `w2` 已经在下面的前向扫描里**精确量出**了；
+  --- 这个分母只回答「多短算太短」。故它不随前瞻一并替换。
+  ---
   --- 适用条件（每一条都是为了不误伤既有裁定）：
   ---   * 仅 strict_end——与 settle 同门控，`wrap_sentence=true`（按宽填满）绝不超宽；
   ---   * 本行落点**不是**句级标点——已落句末就没有短尾巴问题，否则「一句一行」会被
   ---     连续短句黏成一行；
   ---   * 目标句级标点 `t < m`——`t == m` 是段落最后一行，末行短本来就是正常的；
   ---   * 尾巴宽度 ≤ avail/4，故超宽幅度也 ≤ avail/4，不会失控。
-  local function merge_short_tail(endj)
+  local function merge_short_tail(st, endj)
     if not strict_end or endj >= m then return endj end
     if qual[endj] == LV_SENTENCE then return endj end
     if zwsp_after[endj] then return endj end -- ZWSP 是手工标记，不动它
-    local limit = avail / 4
+    local limit = st.avail / 4
     local w2 = 0
     for t = endj + 1, m do
       if t > endj + 1 and gmeta(t).space then w2 = w2 + 1 end
       w2 = w2 + tokens[t].width
       if w2 > limit then return endj end -- 尾巴不算短，维持原落点
-      if qual[t] == LV_SENTENCE and t < m and after_breakable(t) then return t end
+      if qual[t] == LV_SENTENCE and t < m and after_breakable(t, st.min_tier) then return t end
     end
     return endj -- 一路到段尾都没遇到句级标点：这是末行，短是正常的
   end
@@ -580,133 +738,21 @@ function M.wrap(atoms, opts)
     local prefix = (line_idx == 0) and prefix_first or prefix_rest
     -- 前缀占宽：默认量 prefix 字面宽；若调用方给了 prefix_*_width（前缀被渲染插件
     -- conceal/换图标导致显示宽≠字面宽，M5-B），取覆盖值。输出仍是字面前缀，只改记账。
-    local pw
+    local avail
     if line_idx == 0 then
-      pw = opts.prefix_first_width or width_fn(prefix)
+      avail = width - (opts.prefix_first_width or width_fn(prefix))
+      if avail < 1 then avail = 1 end
     else
-      pw = opts.prefix_rest_width or width_fn(prefix)
-    end
-    avail = width - pw
-    if avail < 1 then avail = 1 end
-
-    -- 2) 贪心拟合区 i..k（累计宽 ≤ avail），记录每 token 处累计宽
-    local w = 0
-    k = i - 1
-    cum = {}
-    do
-      local t = i
-      while t <= m do
-        local sp = (t > i and gmeta(t).space) and 1 or 0
-        local nw = w + sp + tokens[t].width
-        if nw > avail and t > i then break end
-        w, cum[t], k = nw, nw, t
-        t = t + 1
-      end
+      avail = avail_rest
     end
 
-    local endj
-    if k < i then
-      -- 单 token 自身超宽（长 URL / 超长代码）：独占一行，允许超宽（4.3.6）
-      endj = i
-    else
-      -- 3) 定本行准入档：拟合区 [i,k] 内的最高静态档位一趟扫出，即可定档——
-      --    「区间内按某口径有无断点」等价于「区间最高档 >= 该口径阈值」，故改版前两次
-      --    has_break 探测压成一次 max。严格模式的三档阶梯：
-      --      第一档 TIER_ATOMIC：只认 ZWSP／纯拉丁或涉中文的普通空格／全角标点旁／atomic 边界；
-      --      第二档 TIER_PANGU ：拟合区内一个都没有时放开盘古空格（仍禁汉字间硬断）；
-      --      第三档 TIER_HAN   ：仍没有时按 wrap_sentence 分流——填满模式放开汉字间硬断，
-      --                          句末优先模式改为整段溢出到下一个标点，绝不在非标点处断。
-      local best_tier = 0
-      for tt = i, k do
-        local tier = (tt >= m) and TIER_FREE or adm[tt] -- 段尾恒可断
-        if tier > best_tier then best_tier = tier end
-      end
-      min_tier = punct_only and TIER_ATOMIC or TIER_HAN
-      local overflow_to_punct = false
-      if punct_only and best_tier < TIER_ATOMIC then
-        min_tier = TIER_PANGU
-        if best_tier < TIER_PANGU then
-          if wrap_sentence then min_tier = TIER_HAN else overflow_to_punct = true end
-        end
-      end
-
-      -- 4) 单趟扫描取候选：ZWSP（最高，保留）＞ sentence ＞ colon ＞ clause（4.3.4）。
-      --    **按 qual 精确分槽**：顿号 LV_SERIES 不进 clause 槽——它若白捡 allow_c 那条短行
-      --    容忍路径，行为就变了；它只在贪心填满到它、或作 punct_far 回落点时才断。
-      local zbest, sent, colon, clause
-      punct_far, punct_ok = nil, nil
-      for tt = i, k do
-        if after_breakable(tt) then
-          if zwsp_after[tt] then zbest = tt end -- 取拟合区内最远的 ZWSP 断点
-          -- 最远标点断点（无短行下限，供回落用）；非严格模式下无人消费，不必算。
-          if strict_end and punct_break(tt) then
-            punct_far = tt
-            -- 过了 allow_c 短行下限的最远标点候选：回落的首选落点（③ 的下限来源）。
-            if cum[tt] >= avail - allow_c then punct_ok = tt end
-          end
-          local q = qual[tt]
-          if q == LV_SENTENCE then
-            sent = tt -- 句末对齐：拟合区内任意句级标点皆可断，取最远（不设短行下限）
-          elseif q == LV_COLON then
-            -- 冒号「高于逗号、低于句号」：优先级由下面 if 链的顺序保证；与逗号一样保留
-            -- allow_c 短行下限，避免冒号靠行首时断出过短的行（用户裁定）。
-            if cum[tt] >= avail - allow_c then colon = tt end
-          elseif q == LV_CLAUSE then
-            if cum[tt] >= avail - allow_c then clause = tt end
-          end
-        end
-      end
-
-      -- 5) 选择。**不变式二：这条 if 链的形状与优先级不得重排。** zbest / sent 两个分支
-      --    排在贪心与 PULL/PUSH 之前，是「走到回落出口时拟合区内必定已无 ZWSP、无句末
-      --    候选」的保证；一旦重排，「ZWSP 绝不被覆盖」与「句级标点不设短行下限」两条裁定
-      --    就会被回落路径的下限间接破坏。
-      if overflow_to_punct then
-        -- 无标点超长子句 + 句末优先：整段溢出到下一个**合法行尾**（或段尾），绝不在非标点
-        -- 处断。这里扫的不再是「下一个可断点」——那会停在盘古空格上（④′／T4）。
-        endj = overflow_from(k)
-      elseif zbest then
-        endj = zbest -- **不经 settle**：ZWSP 是用户手工标记，绝不被回落覆盖
-      elseif (not wrap_sentence) and sent then
-        endj = settle(sent)
-      elseif (not wrap_sentence) and colon then
-        endj = settle(colon)
-      elseif (not wrap_sentence) and clause then
-        endj = settle(clause)
-      elseif after_breakable(k) then
-        endj = settle(k) -- 普通贪心断点
-      else
-        -- 6) 拟合边界落在不可断间隙：按原因分流（4.3.2）
-        local next_no_before = (k + 1 <= m) and (not can_break_before(tokens[k + 1]))
-        if next_no_before then
-          -- PULL：禁前断标点拉回本行（溢出一个标点位）
-          local e = k
-          while e < m and not after_breakable(e) and not can_break_before(tokens[e + 1]) do
-            e = e + 1
-          end
-          endj = settle(e)
-        else
-          -- PUSH：禁后断标点回退，推到下一行
-          local e = k - 1
-          while e > i and not after_breakable(e) do e = e - 1 end
-          if e >= i and after_breakable(e) then
-            endj = settle(e)
-          else
-            -- 退无可退：i 之后紧跟的就是禁则间隙（实例：行首是「《」，其后是一个比整行
-            -- 还宽的 URL）。此时让 i 独占一行会把禁后断标点留在行尾，禁则当场破——
-            -- 判据是「退回去的落点可不可断」，不是「退没退回到 i」。改为向前拉到第一个
-            -- 可断处，宁可这一行超宽（4.3.6 允许），也不让 `《「（` 落在行尾。
-            local t = i
-            while t < m and not after_breakable(t) do t = t + 1 end
-            endj = t
-          end
-        end
-      end
-    end
-
+    -- 2)–5) 按档位阶梯定出本行原始落点
+    local endj = fit_line(st_main, i, avail)
+    -- 6) 回落收尾（仅 settleable 的出口适用）
+    if st_main.settleable then endj = settle(st_main, endj) end
     -- 7) 短尾巴并入（见 merge_short_tail 的说明）。放在所有出口之后、拼装之前，
-    --    使六个出口一视同仁；超宽单 token 出口（k < i）落点即 i，其后若紧跟句末也该并入。
-    endj = merge_short_tail(endj)
+    --    使六个出口一视同仁；超宽单 token 出口落点即 i，其后若紧跟句末也该并入。
+    endj = merge_short_tail(st_main, endj)
 
     -- 8) 拼装本行文本（token 间若原有空格则补一个；行尾空白稍后清理）
     local parts = {}
