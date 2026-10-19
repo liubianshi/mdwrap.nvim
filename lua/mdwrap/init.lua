@@ -354,6 +354,12 @@ end
 
 --- 创建 :MdwrapFormat 命令（整 buffer 或范围）。
 function M.create_commands()
+  vim.api.nvim_create_user_command("MdwrapDisplay", function(args)
+    require("mdwrap.display").command(args.args)
+  end, {
+    nargs = "?",
+    complete = function() return { "enable", "disable", "toggle" } end,
+  })
   vim.api.nvim_create_user_command("MdwrapFormat", function(a)
     if a.range > 0 then
       M.format_buffer(0, { row_start = a.line1 - 1, row_end = a.line2 - 1 })

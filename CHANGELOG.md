@@ -9,6 +9,30 @@
 
 ## [Unreleased]
 
+### Added
+
+- 可选的 render-markdown.nvim 显示折行集成：
+  `require("mdwrap.integrations.render_markdown").extend(opts)` 组合现有渲染回调，
+  按各窗口正文宽度规划断点，不修改源文本、撤销历史或寄存器。
+  普通模式下生效，退出渲染或进入编辑模式时恢复窗口选项；
+  `:MdwrapDisplay [enable|disable|toggle]` 控制当前缓冲区。
+  需要 Neovim ≥ 0.11 及实验性 `nvim__ns_set` API，硬折行的最低版本不变。
+- 源坐标原子化及共享断点规划接口，显示标记不会参与硬折行的宽度度量。
+  新增真实 UI、真实 render-markdown 联动、多窗口、生命周期及旧版本回退测试。
+- `extend(render_opts, { wrap_sentence = true })` 可单独启用显示层的按宽填满模式，
+  不改变硬折行的 `wrap_sentence` 配置。
+- 显示专用 `max_width` 限制宽窗口中的折行宽度；窄窗口仍按实际正文区折行，
+  不改变硬折行配置或源文本。
+
+### Fixed
+
+- 显示折行仅修改和恢复窗口局部选项，不再改写全局默认值或影响新标签页。
+- 列表原有续行再次折行时保留悬挂缩进，按宽填满模式也会预留源行缩进的宽度。
+- 自动符号列增减时重新计算正文区宽度并刷新折行；宽度不变的重绘不会重复规划。
+- 显示折行已配置但当前缓冲区尚未渲染时，`:MdwrapDisplay` 不再误报未配置；
+  命令会保留开关状态，首次渲染后生效。
+  未配置时的提示明确要求把适配器返回值传给 `render-markdown.setup()`。
+
 ## [0.6.0] - 2026-09-24
 
 ### Changed

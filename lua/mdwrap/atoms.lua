@@ -156,13 +156,13 @@ local function visual_width(str, sc, ec, hidden, adds, width_fn)
   return w < 0 and 0 or w
 end
 
---- 把一条逻辑行字符串原子化。
 ---@param str string 单逻辑行（无换行）
 ---@param opts mdwrap.AtomizeOpts?
----@return mdwrap.Atom[] atoms
-function M.atomize(str, opts)
+---@return table<integer, {sc:integer, ec:integer, ty:string}>
+---@return {sc:integer, ec:integer}[]
+---@return {at:integer, w:integer}[]
+local function parse_spans(str, opts)
   opts = opts or {}
-  local width_fn = opts.width_fn or vim.fn.strdisplaywidth
   local conceal_on = opts.conceal ~= false
 
   local parser = vim.treesitter.get_string_parser(str, "markdown_inline")
@@ -179,7 +179,7 @@ function M.atomize(str, opts)
 
   -- 两个 conceal 源合一：tree-sitter 查询（**/反引号 等）+ 持久 extmark（链接 url、$、
   -- render-markdown/markview 自盖的 ** 等）。隐藏区间取并集去重，加宽锚点单列。
-  local hide_src = conceal_on and collect_conceal(root, str) or {}
+  local hide_src = conceal_on and opts.query_conceal ~= false and collect_conceal(root, str) or {}
   local adds = {} -- {at=逻辑字节偏移, w=附加视觉宽}
   if opts.extmark_conceal then
     for _, e in ipairs(opts.extmark_conceal) do
@@ -188,6 +188,17 @@ function M.atomize(str, opts)
     end
   end
   local hidden = merge_ranges(hide_src)
+
+  return atomic_at, hidden, adds
+end
+
+---@param str string
+---@param opts mdwrap.AtomizeOpts?
+---@return mdwrap.Atom[]
+function M.atomize(str, opts)
+  opts = opts or {}
+  local width_fn = opts.width_fn or vim.fn.strdisplaywidth
+  local atomic_at, hidden, adds = parse_spans(str, opts)
 
   ---@type mdwrap.Atom[]
   local atoms = {}
@@ -295,6 +306,61 @@ function M.atomize(str, opts)
     end
   end
   return atoms
+end
+
+---@param str string
+---@param opts mdwrap.AtomizeOpts?
+---@return mdwrap.SourceAtom[]
+function M.atomize_mapped(str, opts)
+  opts = opts or {}
+  local width_fn = opts.width_fn or vim.fn.strdisplaywidth
+  local atomic_at, hidden, adds = parse_spans(str, opts)
+  ---@type mdwrap.SourceAtom[]
+  local result = {}
+  local offset = 0
+  while offset < #str do
+    local span = atomic_at[offset]
+    local size = span and (span.ec - offset) or char_len(str:byte(offset + 1))
+    local text = str:sub(offset + 1, offset + size)
+    if not span and byte_concealed(hidden, offset) then
+      if #result > 0 then result[#result].ec = offset + size end
+    else
+      local class, kind
+      if span then
+        class = "atomic"
+        kind = span.ty == "code_span" and "code" or span.ty == "latex_block" and "math" or "link"
+      else
+        local attr = chardata.char_attr(cp(text) or 0)
+        if text == " " or text == "\t" then class = "space"
+        elseif attr == "CJK" or attr == "CJK_PUN" then class = "cjk"
+        elseif attr == "PUN_FORBIT_BREAK_BEFORE" then class = "punct_no_break_before"
+        elseif attr == "PUN_FORBIT_BREAK_AFTER" then class = "punct_no_break_after"
+        else class = "word" end
+        if class == "word" then
+          local rest = str:sub(offset + 1)
+          local ending = rest:match("^({{<.-}})") or rest:match("^({{%%.-%%}})") or rest:match(CITE_PAT)
+          if ending then
+            text, size, class = ending, #ending, "atomic"
+            kind = ending:sub(1, 1) == "@" and "cite" or "shortcode"
+          end
+        end
+      end
+      local previous = result[#result]
+      if class == "word" and previous and previous.class == "word" then
+        previous.text, previous.ec = previous.text .. text, offset + size
+      else
+        result[#result + 1] = {
+          text = text, width = 0, class = class, atomic_kind = kind,
+          sc = #result == 0 and 0 or offset, ec = offset + size,
+        }
+      end
+    end
+    offset = offset + size
+  end
+  for _, item in ipairs(result) do
+    item.width = visual_width(str, item.sc, item.ec, hidden, adds, width_fn)
+  end
+  return result
 end
 
 return M

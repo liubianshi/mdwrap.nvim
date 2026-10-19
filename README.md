@@ -1,6 +1,7 @@
 # mdwrap.nvim
 
-为 Pandoc、Quarto 方言的中文 Markdown 提供 **conceal 感知的硬折行**的 Neovim 插件。
+为 Pandoc、Quarto 方言的中文 Markdown 提供 **conceal 感知的硬折行**，
+也可扩展 render-markdown.nvim，实现**不改文档的显示折行**。
 
 它按 Neovim **实际显示的宽度**折行（扣除被 conceal 隐藏的部分，如 `**`、行内代码反引号、
 链接 URL 等），使文本在视觉上对齐；并实现中文排版规则：禁则处理（标点不落行首、行尾），
@@ -97,6 +98,79 @@ use({ "liubianshi/mdwrap.nvim", config = function() require("mdwrap").setup({}) 
   `opts` 含 `bufnr`（取窗口 `conceallevel` 等环境量）与 `range`；供 conform.nvim 等格式化编排器调用。
 
 折行宽度取值顺序：显式配置 `width` ＞ buffer 的 `textwidth`（非 0）＞ 默认 80。
+
+## 显示折行：扩展 render-markdown.nvim
+
+显示折行只改变屏幕上的断点，不插入真实换行，不合并已有行，也不调整空格或表格。
+缓冲区内容、`modified`、撤销历史和寄存器不受影响；复制、搜索、编辑仍针对原文，
+`gj`、`gk` 可沿屏幕行移动。
+这项集成默认不开启，使用 render-markdown.nvim 的公开 `on.render`、`on.clear` 回调，
+无需修改或 fork 上游；已用 render-markdown.nvim v8.14.0 验证。
+
+需要 **Neovim ≥ 0.11**，且提供实验性 API `nvim__ns_set`，用于隔离各窗口的显示标记。
+缺少 API 时会警告并跳过集成，原有硬折行仍支持 Neovim ≥ 0.10。
+同一缓冲区在不同宽度的窗口中会独立折行，宽度取窗口的实际正文区，扣除行号、符号栏和折叠栏，
+可用显示专用的 `max_width` 限制上限。
+它不读取硬折行的 `width`、`textwidth` 或默认 80。
+
+在 lazy.nvim 的 render-markdown.nvim 配置中包装原有 `opts`：
+
+```lua
+{
+  "MeanderingProgrammer/render-markdown.nvim",
+  dependencies = {
+    { "liubianshi/mdwrap.nvim", opts = { set_formatexpr = false } },
+  },
+  opts = function(_, opts)
+    return require("mdwrap.integrations.render_markdown").extend(opts, {
+      wrap_sentence = true,
+      max_width = 120,
+    })
+  end,
+}
+```
+
+`extend(opts)` 返回配置副本，保留其他设置，并先调用原有回调，再更新显示折行。
+如果已有自定义 `config` 函数，须把返回值传给 `setup`：
+
+```lua
+require("render-markdown").setup(require("mdwrap.integrations.render_markdown").extend(opts, {
+  wrap_sentence = true,
+  max_width = 120,
+}))
+```
+
+第二个参数是显示专用配置：`wrap_sentence = true` 按窗口宽度尽量填满，不优先在句末提前折行。
+它不改变 `mdwrap.setup()` 的硬折行配置；不指定时继承原有 `wrap_sentence` 值。
+英文单词、中文禁则和括号整体约束仍有效，末行及已有物理换行附近可能较短，不保证每行等长。
+`max_width` 是正整数，单位为显示列，包含列表或引用的前缀缩进；120 列约容纳 60 个汉字。
+断点按 `min(窗口正文宽度, max_width)` 规划：宽窗口不继续拉长，窄窗口仍随窗口收缩。
+不指定 `max_width` 时不设上限；它不改变窗口大小、全局选项或源文件。
+
+只加载 mdwrap 或执行 `:MdwrapDisplay` 不会自动接入 render-markdown。
+这里的 `set_formatexpr = false` 让 `gq` 不接管硬折行；若仍需原有 `gq` 功能，可以省略该选项。
+也不要把 `MdwrapFormat` 或 conform 的 mdwrap 格式化器当作显示折行入口，它们会修改文本。
+
+`:MdwrapDisplay` 切换当前缓冲区的显示折行，作用于显示它的所有窗口；
+也可显式执行 `:MdwrapDisplay enable`、`:MdwrapDisplay disable`、`:MdwrapDisplay toggle`。
+适配器配置后、首次渲染前执行命令，会保留当前缓冲区的开关状态，待渲染回调触发后生效。
+插入、可视及其他非普通模式下会撤销显示标记并恢复窗口选项，回到普通模式后自动重建。
+关闭 render-markdown 渲染、切换缓冲区、关闭窗口时也会清理。
+显示期间临时接管 `wrap`、`linebreak`、`breakindent`、`showbreak`、`list`，关闭后恢复；
+不改全局选项，也不改用户的 Neovim 配置文件。
+
+断点复用 mdwrap 的句末偏好、中文禁则和括号整体规则，列表、引用的续行按前缀宽缩进。
+硬折行允许的超宽策略不适用于屏幕：窗口放不下时，会放宽「中文只在标点断」的限制。
+`mdwrap-ignore` 标记及块级保留规则仍有效，被保留的源行不注入 mdwrap 断点，但仍可由原生 `wrap` 显示。
+
+Neovim 原生软折会把被 conceal 隐藏的源字符计入折行列数。
+集成会先按渲染宽度规划，再校验原生列数，必要时重新选择断点，避免隐藏标记把续行挤偏。
+超过窗口宽的隐藏 URL、超长不可分原子、Tab、零宽空格、跨行 conceal、重复到续行的 inline 虚拟文本，
+以及无法精确度量的 conceal 状态，会使该源行回退到原生软折行，不强行保证句末或禁则。
+这些回退行及保留块也不保证遵守 `max_width`。
+目前精确规划支持 `conceallevel=0` 或 `3`，`1`、`2` 回退原生折行。
+启用行号且设置 `cpoptions+=n` 时，原生续行会借用行号栏，集成也会回退原生折行。
+解析或窗口 API 出错时会清理该缓冲区的显示状态并警告；修复原因后可用 `:MdwrapDisplay enable` 重试。
 
 ## 手动关闭折行（mdwrap-ignore 标记）
 
@@ -227,6 +301,8 @@ format-on-save、`:Format` 编排。若想让 conform 单独接管，把 `gq` �
 - `spacing.lua` — 盘古空格（**纯函数**）。
 - `chardata.lua` — 字符分类码点表（**纯函数**，移植自 Perl 版）。
 - `init.lua` — 编辑器集成与 `formatexpr` 入口。
+- `display.lua` — 可见源行规划、窗口隔离的 inline 标记与窗口选项生命周期。
+- `integrations/render_markdown.lua` — 组合 render-markdown 回调的可选适配器。
 
 `layout.lua`、`spacing.lua`、`chardata.lua` 可在无 Neovim 的纯 Lua（luajit、lua5.1）下加载与测试；
 布局层通过 `width_fn` 参数接收宽度函数（生产注入 `strdisplaywidth` + conceal，测试注入查表 stub）。
@@ -247,7 +323,15 @@ lua-language-server 按名字在整个工作区解析 `---@class`，与 `require
 tests/run_unit.sh      # 纯 Lua 单元测试（layout/spacing/chardata），无需 Neovim
 tests/run_golden.sh    # nvim --headless 驱动，逐字节 diff input→expected + 三项不变量
 tests/run_typecheck.sh # lua-language-server --check 领域类型校验（注入真实 $VIMRUNTIME）+ 纯模块 no-vim 冒烟
+python3 -m pip install -r tests/requirements-display.txt
+tests/run_display.sh   # pynvim 附着真实 UI，验证屏幕断点、窗口隔离、模式切换及原文不变
 ```
+
+显示测试需要 Neovim ≥ 0.11 及 Markdown parser、查询。
+`RENDER_MARKDOWN_PATH=/path/to/render-markdown.nvim tests/run_display.sh` 可指定真实渲染插件的检出目录；
+未指定时探测默认 lazy.nvim 安装位置，未找到时只跳过真实插件用例。
+CI 设置 `REQUIRE_RENDER_MARKDOWN=1`，缺少该依赖会直接失败，并分别测试 Neovim 0.11.0 与 stable。
+Neovim 0.10.4 单独执行不支持显示 API 时的兼容性测试。
 
 三项不变量对全部 golden 输入自动执行：①幂等 `format(format(x)) == format(x)`；
 ②块外字节不变；③pandoc AST 语义保持（系统有 pandoc 时）。

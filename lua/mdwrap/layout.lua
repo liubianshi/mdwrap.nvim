@@ -330,8 +330,9 @@ M._LV = { NORMAL = LV_NORMAL, SERIES = LV_SERIES, CLAUSE = LV_CLAUSE,
 --- 贪心折行。
 ---@param atoms mdwrap.Atom[] 原子数组
 ---@param opts mdwrap.LayoutOpts
----@return string[] lines
-function M.wrap(atoms, opts)
+---@param planning boolean
+---@return string[]|mdwrap.PlannedLine[]|nil
+local function wrap_core(atoms, opts, planning)
   opts = opts or {}
   local width = opts.width or 80
   local prefix_first = opts.prefix_first or ""
@@ -366,9 +367,14 @@ function M.wrap(atoms, opts)
   local zwsp_after = {}
   local pend_space = false
   local pend_zwsp_text = nil
-  for _, a in ipairs(atoms) do
+  local pending_width = 0
+  for source_index, original in ipairs(atoms) do
+    local a = {}
+    for key, value in pairs(original) do a[key] = value end
+    a.source_index = source_index
     if a.class == "space" then
       pend_space = true
+      pending_width = pending_width + a.width
     elseif a.class == "zwsp" then
       if #tokens > 0 then
         tokens[#tokens].text = tokens[#tokens].text .. a.text
@@ -379,18 +385,24 @@ function M.wrap(atoms, opts)
     else
       local tok = a
       if pend_zwsp_text then
-        tok = { text = pend_zwsp_text .. a.text, width = a.width, class = a.class, atomic_kind = a.atomic_kind }
+        tok = a
+        tok.text = pend_zwsp_text .. a.text
         pend_zwsp_text = nil
       end
       tokens[#tokens + 1] = tok
-      gap[#tokens] = { space = pend_space } -- 该 token 之「前」的间隙
+      gap[#tokens] = { space = pend_space, width = planning and pending_width or 1 } -- 该 token 之「前」的间隙
       pend_space = false
+      pending_width = 0
     end
   end
   local m = #tokens
   if m == 0 then return {} end
 
   local function gmeta(k) return gap[k] or { space = false } end
+  local function gap_width(index)
+    local meta = gmeta(index)
+    return meta.space and meta.width or 0
+  end
 
   -- 括号配对作整体（bracket_as_unit）：用栈匹配配对括号；组宽 ≤ 续行整行可用宽时，锁定组内
   -- 所有间隙（不在括号内部断），宁可整组移到下一行（组前 `（` 之「前」仍可断）；组宽超一行才
@@ -413,7 +425,7 @@ function M.wrap(atoms, opts)
           local gw = 0
           for t = g.idx, idx do
             gw = gw + tokens[t].width
-            if t > g.idx and gmeta(t).space then gw = gw + 1 end
+            if t > g.idx then gw = gw + gap_width(t) end
           end
           if gw <= avail_full then
             for k = g.idx + 1, idx do locked_gap[k] = true end
@@ -522,7 +534,7 @@ function M.wrap(atoms, opts)
     do
       local t = start
       while t <= m do
-        local sp = (t > start and gmeta(t).space) and 1 or 0
+        local sp = t > start and gap_width(t) or 0
         local nw = w + sp + tokens[t].width
         if nw > avail_in and t > start then break end
         w, cum[t], k = nw, nw, t
@@ -646,7 +658,7 @@ function M.wrap(atoms, opts)
     if not lw then
       lw = cum[k] or 0
       for t = k + 1, endj do
-        if t > start and gmeta(t).space then lw = lw + 1 end
+        if t > start then lw = lw + gap_width(t) end
         lw = lw + tokens[t].width
       end
     end
@@ -733,7 +745,7 @@ function M.wrap(atoms, opts)
     local limit = st.avail / 4
     local w2 = 0
     for t = endj + 1, m do
-      if t > endj + 1 and gmeta(t).space then w2 = w2 + 1 end
+      if t > endj + 1 then w2 = w2 + gap_width(t) end
       w2 = w2 + tokens[t].width
       if w2 > limit then return endj end -- 尾巴不算短，维持原落点
       if qual[t] == LV_SENTENCE and t < m and after_breakable(t, st.min_tier) then return t end
@@ -759,23 +771,83 @@ function M.wrap(atoms, opts)
     -- 2)–5) 按档位阶梯定出本行原始落点
     local endj = fit_line(st_main, i, avail)
     -- 6) 回落收尾（仅 settleable 的出口适用）
-    if st_main.settleable then endj = settle(st_main, endj) end
+    if st_main.settleable and not planning then endj = settle(st_main, endj) end
     -- 7) 短尾巴并入（见 merge_short_tail 的说明）。放在所有出口之后、拼装之前，
     --    使六个出口一视同仁；超宽单 token 出口落点即 i，其后若紧跟句末也该并入。
-    endj = merge_short_tail(st_main, endj)
+    if not planning then endj = merge_short_tail(st_main, endj) end
+
+    local measured = 0
+    if planning then
+      for token_index = i, endj do
+        if token_index > i then measured = measured + gap_width(token_index) end
+        measured = measured + tokens[token_index].width
+      end
+    end
+    if planning and (measured > avail or (endj < m and
+        (measured + gap_width(endj + 1) > avail or
+          not can_break_after(tokens[endj]) or not can_break_before(tokens[endj + 1])))) then
+      local chosen, chosen_width
+      for tier = punct_only and TIER_ATOMIC or TIER_HAN, TIER_HAN, -1 do
+        local consumed, farthest, sentence, colon, clause = 0, nil, nil, nil, nil
+        local widths = {}
+        for token_index = i, m do
+          if token_index > i then consumed = consumed + gap_width(token_index) end
+          consumed = consumed + tokens[token_index].width
+          if consumed > avail then break end
+          widths[token_index] = consumed
+          if token_index == m or (consumed + gap_width(token_index + 1) <= avail and adm[token_index] >= tier and
+              can_break_after(tokens[token_index]) and can_break_before(tokens[token_index + 1])) then
+            farthest = token_index
+            if qual[token_index] == LV_SENTENCE then sentence = token_index end
+            if consumed >= avail - allow_c then
+              if qual[token_index] == LV_COLON then colon = token_index end
+              if qual[token_index] == LV_CLAUSE then clause = token_index end
+            end
+          end
+        end
+        chosen = not wrap_sentence and (sentence or colon or clause) or nil
+        chosen = chosen or farthest
+        if chosen then chosen_width = widths[chosen]; break end
+      end
+      if not chosen then return nil end
+      endj, measured = chosen, chosen_width
+    end
 
     -- 8) 拼装本行文本（token 间若原有空格则补一个；行尾空白稍后清理）
-    local parts = {}
-    for tt = i, endj do
-      if tt > i and gmeta(tt).space then parts[#parts + 1] = " " end
-      parts[#parts + 1] = tokens[tt].text
+    if planning then
+      lines[#lines + 1] = {
+        first = tokens[i].source_index,
+        last = tokens[endj].source_index,
+        width = measured,
+        prefix_width = width - avail,
+      }
+    else
+      local parts = {}
+      for tt = i, endj do
+        if tt > i and gmeta(tt).space then parts[#parts + 1] = " " end
+        parts[#parts + 1] = tokens[tt].text
+      end
+      lines[#lines + 1] = (prefix .. table.concat(parts)):gsub("%s+$", "")
     end
-    lines[#lines + 1] = (prefix .. table.concat(parts)):gsub("%s+$", "")
     i = endj + 1
     line_idx = line_idx + 1
   end
 
   return lines
+end
+
+---@param atoms mdwrap.Atom[]
+---@param opts mdwrap.LayoutOpts
+---@return string[]
+function M.wrap(atoms, opts)
+  return wrap_core(atoms, opts, false) --[[@as string[] ]]
+end
+
+---@param atoms mdwrap.Atom[]
+---@param opts mdwrap.LayoutOpts
+---@return mdwrap.PlannedLine[]|nil
+function M.plan(atoms, opts)
+  return wrap_core(atoms, opts, true) --[[@as mdwrap.PlannedLine[]|nil]]
 end
 
 return M

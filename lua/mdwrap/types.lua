@@ -48,6 +48,10 @@
 
 ---@class (partial) mdwrap.Opts: mdwrap.Config   -- setup() 的用户覆盖表，全字段可选
 
+---@class mdwrap.DisplayOpts
+---@field wrap_sentence? boolean
+---@field max_width? integer
+
 ---@class (partial) mdwrap.FormatOpts: mdwrap.Opts -- format_buffer / format_lines 额外接受范围限定（(partial) 须沿继承链显式传递，否则父类字段被当作必填）
 ---@field row_start? integer
 ---@field row_end? integer
@@ -77,6 +81,17 @@
 ---@field width_fn? mdwrap.WidthFn
 ---@field conceal? boolean
 ---@field extmark_conceal? mdwrap.ExtmarkConceal[]  -- 逻辑串坐标的 extmark conceal 覆盖，与 tree-sitter conceal 合并去重
+---@field query_conceal? boolean
+
+---@class mdwrap.SourceAtom: mdwrap.Atom
+---@field sc integer
+---@field ec integer
+
+---@class mdwrap.PlannedLine
+---@field first integer
+---@field last integer
+---@field width integer
+---@field prefix_width integer
 
 --- mdwrap-ignore 标记的扫描结果（ignore.scan 产出，ignore.apply 消费）。坐标一律 0-indexed。
 ---@class mdwrap.Ignore
