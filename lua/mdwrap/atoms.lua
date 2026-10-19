@@ -311,6 +311,7 @@ end
 ---@param str string
 ---@param opts mdwrap.AtomizeOpts?
 ---@return mdwrap.SourceAtom[]
+---@return {sc:integer, ec:integer}[]
 function M.atomize_mapped(str, opts)
   opts = opts or {}
   local width_fn = opts.width_fn or vim.fn.strdisplaywidth
@@ -360,7 +361,7 @@ function M.atomize_mapped(str, opts)
   for _, item in ipairs(result) do
     item.width = visual_width(str, item.sc, item.ec, hidden, adds, width_fn)
   end
-  return result
+  return result, hidden
 end
 
 return M

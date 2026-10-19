@@ -90,8 +90,6 @@
 ---@class mdwrap.PlannedLine
 ---@field first integer
 ---@field last integer
----@field width integer
----@field prefix_width integer
 
 --- mdwrap-ignore 标记的扫描结果（ignore.scan 产出，ignore.apply 消费）。坐标一律 0-indexed。
 ---@class mdwrap.Ignore

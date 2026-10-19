@@ -327,6 +327,13 @@ M._LV = { NORMAL = LV_NORMAL, SERIES = LV_SERIES, CLAUSE = LV_CLAUSE,
 -- 折行核心（4.3.1 / 4.3.2 / 4.3.4 / 4.3.6）
 -- ----------------------------------------------------------------------------
 
+local function with_text(original, text)
+  local result = {}
+  for key, value in pairs(original) do result[key] = value end
+  result.text = text
+  return result
+end
+
 --- 贪心折行。
 ---@param atoms mdwrap.Atom[] 原子数组
 ---@param opts mdwrap.LayoutOpts
@@ -363,33 +370,30 @@ local function wrap_core(atoms, opts, planning)
   -- 1) 原子 → token + gap 元信息。
   --    space 折叠进 token 间隙；ZWSP 是**最高优先级断行机会且保留**：其文本并入前一
   --    token 末尾（断行时留在上一行行尾，零宽），并标记该 token 之后为 zwsp 优先断点。
-  local tokens, gap = {}, {}
+  local tokens, gap, source_indices = {}, {}, {}
   local zwsp_after = {}
   local pend_space = false
   local pend_zwsp_text = nil
   local pending_width = 0
   for source_index, original in ipairs(atoms) do
-    local a = {}
-    for key, value in pairs(original) do a[key] = value end
-    a.source_index = source_index
-    if a.class == "space" then
+    if original.class == "space" then
       pend_space = true
-      pending_width = pending_width + a.width
-    elseif a.class == "zwsp" then
+      pending_width = pending_width + original.width
+    elseif original.class == "zwsp" then
       if #tokens > 0 then
-        tokens[#tokens].text = tokens[#tokens].text .. a.text
+        tokens[#tokens] = with_text(tokens[#tokens], tokens[#tokens].text .. original.text)
         zwsp_after[#tokens] = true
       else
-        pend_zwsp_text = (pend_zwsp_text or "") .. a.text -- 段首 ZWSP：留给下一 token
+        pend_zwsp_text = (pend_zwsp_text or "") .. original.text -- 段首 ZWSP：留给下一 token
       end
     else
-      local tok = a
+      local token = original
       if pend_zwsp_text then
-        tok = a
-        tok.text = pend_zwsp_text .. a.text
+        token = with_text(original, pend_zwsp_text .. original.text)
         pend_zwsp_text = nil
       end
-      tokens[#tokens + 1] = tok
+      tokens[#tokens + 1] = token
+      if planning then source_indices[#tokens] = source_index end
       gap[#tokens] = { space = pend_space, width = planning and pending_width or 1 } -- 该 token 之「前」的间隙
       pend_space = false
       pending_width = 0
@@ -505,6 +509,13 @@ local function wrap_core(atoms, opts, planning)
     return t
   end
 
+  local function fits_screen(state, index)
+    local measured = state.cum[index]
+    return measured <= state.avail and (index == m or
+      (measured + gap_width(index + 1) <= state.avail and
+        can_break_after(tokens[index]) and can_break_before(tokens[index + 1])))
+  end
+
   -- ----------------------------------------------------------------------------
   -- fit_line：按档位阶梯定出一行的**原始落点**
   -- ----------------------------------------------------------------------------
@@ -519,7 +530,7 @@ local function wrap_core(atoms, opts, planning)
   ---@param st table       逐行状态容器（new_state 产出）
   ---@param start integer  本行起始 token 下标
   ---@param avail_in integer 本行可用宽
-  ---@return integer endj_raw  原始落点（未经回落／并入）
+  ---@return integer? endj_raw  原始落点（未经回落／并入）
   ---@return integer line_width 落点处的行宽
   ---@return boolean overflowed 行宽是否超出 avail_in
   local function fit_line(st, start, avail_in)
@@ -561,15 +572,17 @@ local function wrap_core(atoms, opts, planning)
     --                          句末优先模式改为整段溢出到下一个标点，绝不在非标点处断。
     local best_tier = 0
     for tt = start, k do
-      local tier = (tt >= m) and TIER_FREE or adm[tt] -- 段尾恒可断
-      if tier > best_tier then best_tier = tier end
+      if not planning or fits_screen(st, tt) then
+        local tier = (tt >= m) and TIER_FREE or adm[tt] -- 段尾恒可断
+        if tier > best_tier then best_tier = tier end
+      end
     end
     local min_tier = punct_only and TIER_ATOMIC or TIER_HAN
     local overflow_to_punct = false
     if punct_only and best_tier < TIER_ATOMIC then
       min_tier = TIER_PANGU
       if best_tier < TIER_PANGU then
-        if wrap_sentence then min_tier = TIER_HAN else overflow_to_punct = true end
+        if wrap_sentence or planning then min_tier = TIER_HAN else overflow_to_punct = true end
       end
     end
     st.min_tier = min_tier
@@ -577,10 +590,11 @@ local function wrap_core(atoms, opts, planning)
     -- 4) 单趟扫描取候选：ZWSP（最高，保留）＞ sentence ＞ colon ＞ clause（4.3.4）。
     --    **按 qual 精确分槽**：顿号 LV_SERIES 不进 clause 槽——它若白捡 allow_c 那条短行
     --    容忍路径，行为就变了；它只在贪心填满到它、或作 punct_far 回落点时才断。
-    local zbest, sent, colon, clause
+    local zbest, sent, colon, clause, farthest
     local punct_far, punct_ok
     for tt = start, k do
-      if after_breakable(tt, min_tier) then
+      if after_breakable(tt, min_tier) and (not planning or fits_screen(st, tt)) then
+        if planning then farthest = tt end
         if zwsp_after[tt] then zbest = tt end -- 取拟合区内最远的 ZWSP 断点
         -- 最远标点断点（无短行下限，供回落用）；非严格模式下无人消费，不必算。
         if strict_end and punct_break(tt) then
@@ -622,8 +636,10 @@ local function wrap_core(atoms, opts, planning)
       endj, settleable = colon, true
     elseif (not wrap_sentence) and clause then
       endj, settleable = clause, true
-    elseif after_breakable(k, min_tier) then
+    elseif after_breakable(k, min_tier) and (not planning or fits_screen(st, k)) then
       endj, settleable = k, true -- 普通贪心断点
+    elseif planning then
+      endj, settleable = farthest, false
     else
       -- 6) 拟合边界落在不可断间隙：按原因分流（4.3.2）
       local next_no_before = (k + 1 <= m) and (not can_break_before(tokens[k + 1]))
@@ -652,6 +668,7 @@ local function wrap_core(atoms, opts, planning)
       end
     end
     st.settleable = settleable
+    if not endj then return nil, 0, true end
 
     -- 落点处的行宽：拟合区内的落点直接查 cum；区外的（PULL / 溢出）自 k 续量。
     local lw = cum[endj]
@@ -770,56 +787,18 @@ local function wrap_core(atoms, opts, planning)
 
     -- 2)–5) 按档位阶梯定出本行原始落点
     local endj = fit_line(st_main, i, avail)
+    if not endj then return nil end
     -- 6) 回落收尾（仅 settleable 的出口适用）
     if st_main.settleable and not planning then endj = settle(st_main, endj) end
     -- 7) 短尾巴并入（见 merge_short_tail 的说明）。放在所有出口之后、拼装之前，
     --    使六个出口一视同仁；超宽单 token 出口落点即 i，其后若紧跟句末也该并入。
     if not planning then endj = merge_short_tail(st_main, endj) end
 
-    local measured = 0
-    if planning then
-      for token_index = i, endj do
-        if token_index > i then measured = measured + gap_width(token_index) end
-        measured = measured + tokens[token_index].width
-      end
-    end
-    if planning and (measured > avail or (endj < m and
-        (measured + gap_width(endj + 1) > avail or
-          not can_break_after(tokens[endj]) or not can_break_before(tokens[endj + 1])))) then
-      local chosen, chosen_width
-      for tier = punct_only and TIER_ATOMIC or TIER_HAN, TIER_HAN, -1 do
-        local consumed, farthest, sentence, colon, clause = 0, nil, nil, nil, nil
-        local widths = {}
-        for token_index = i, m do
-          if token_index > i then consumed = consumed + gap_width(token_index) end
-          consumed = consumed + tokens[token_index].width
-          if consumed > avail then break end
-          widths[token_index] = consumed
-          if token_index == m or (consumed + gap_width(token_index + 1) <= avail and adm[token_index] >= tier and
-              can_break_after(tokens[token_index]) and can_break_before(tokens[token_index + 1])) then
-            farthest = token_index
-            if qual[token_index] == LV_SENTENCE then sentence = token_index end
-            if consumed >= avail - allow_c then
-              if qual[token_index] == LV_COLON then colon = token_index end
-              if qual[token_index] == LV_CLAUSE then clause = token_index end
-            end
-          end
-        end
-        chosen = not wrap_sentence and (sentence or colon or clause) or nil
-        chosen = chosen or farthest
-        if chosen then chosen_width = widths[chosen]; break end
-      end
-      if not chosen then return nil end
-      endj, measured = chosen, chosen_width
-    end
-
     -- 8) 拼装本行文本（token 间若原有空格则补一个；行尾空白稍后清理）
     if planning then
       lines[#lines + 1] = {
-        first = tokens[i].source_index,
-        last = tokens[endj].source_index,
-        width = measured,
-        prefix_width = width - avail,
+        first = source_indices[i],
+        last = source_indices[endj],
       }
     else
       local parts = {}

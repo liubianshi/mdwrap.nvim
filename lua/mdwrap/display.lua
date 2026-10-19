@@ -100,6 +100,19 @@ local function native_width(source, first, last, marks)
   return width
 end
 
+local function blank_gap(source, first, last, cached)
+  local cursor = first
+  for _, range in ipairs(cached.hidden) do
+    local start, ending = cached.offset + range.sc, cached.offset + range.ec
+    if start >= last then break end
+    if ending > cursor then
+      if not source:sub(cursor + 1, math.min(start, last)):match("^ *$") then return false end
+      cursor = math.min(ending, last)
+    end
+  end
+  return source:sub(cursor + 1, last):match("^ *$") ~= nil
+end
+
 local function padding_marks(source, row, cached, plan, width, marks)
   local result = {}
   local start, indentation = 0, 0
@@ -107,7 +120,7 @@ local function padding_marks(source, row, cached, plan, width, marks)
     local following = plan[index + 1]
     local ending = following and cached.offset + cached.atoms[following.first].sc or #source
     local column = cached.offset + cached.atoms[current.last].ec
-    if not source:sub(column + 1, ending):match("^ *$") then return nil end
+    if not blank_gap(source, column, ending, cached) then return nil end
     local occupied = native_width(source, start, ending, marks) + indentation
     if occupied > width then return nil end
     local padding = width - occupied + cached.rest_width
@@ -145,12 +158,13 @@ local function row_plan(window, state, row, prefix, rest_prefix, width)
     local prefix_atoms = prefix ~= "" and atoms.atomize_mapped(prefix, {
       query_conceal = false, extmark_conceal = shifted_marks(marks, 0, offset),
     }) or {}
+    local body_atoms, hidden = atoms.atomize_mapped(body, {
+      conceal = concealed, query_conceal = query,
+      extmark_conceal = shifted_marks(marks, offset, #source),
+    })
     cached = {
       key = key, offset = offset, prefix_width = sum_width(prefix_atoms),
-      atoms = atoms.atomize_mapped(body, {
-        conceal = concealed, query_conceal = query,
-        extmark_conceal = shifted_marks(marks, offset, #source),
-      }),
+      atoms = body_atoms, hidden = hidden,
     }
     cached.rest_width = math.max(0,
       vim.fn.strdisplaywidth(rest_prefix) - vim.fn.strdisplaywidth(prefix) + cached.prefix_width)
@@ -310,6 +324,11 @@ function M.configure(opts)
     callback = function(event)
       if changing then return end
       if event.event == "OptionSet" then
+        local window = vim.api.nvim_get_current_win()
+        local window_state = windows[window]
+        if window_state and managed[event.match] ~= nil and vim.v.option_command ~= "setglobal" then
+          window_state.saved[event.match] = vim.api.nvim_get_option_value(event.match, { win = window, scope = "local" })
+        end
         for _, state in pairs(windows) do state.cache = {} end
       end
       if vim.api.nvim_get_mode().mode ~= "n" then

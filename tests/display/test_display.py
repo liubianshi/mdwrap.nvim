@@ -252,6 +252,46 @@ class DisplayTests(unittest.TestCase):
         self.render(["**中文句子。** 后面的句子。最后一句。"], width=20)
         self.assertEqual(self.rows(3), ["中文句子。", "后面的句子。", "最后一句。"])
 
+    def test_break_before_query_concealed_bold_keeps_display_plan(self):
+        self.render(["First sentence. **Second sentence.** Last sentence."], width=24)
+        before = self.snapshot()
+        self.assertTrue(self.marks())
+        self.assertEqual(self.rows(3), ["First sentence.", "Second sentence.", "Last sentence."])
+        self.settle()
+        self.assertEqual(before, self.snapshot())
+
+    def test_break_before_extmark_concealed_prefix_keeps_display_plan(self):
+        self.source(["First sentence. ~~Second sentence.~~ Last sentence."])
+        self.editor.ui_try_resize(24, 16)
+        self.editor.exec_lua("""
+            vim.treesitter.query.set('markdown_inline', 'highlights', '')
+            local namespace = vim.api.nvim_create_namespace('display-gap-test')
+            vim.api.nvim_buf_set_extmark(0, namespace, 0, 16, {end_col = 18, conceal = ''})
+            vim.api.nvim_buf_set_extmark(0, namespace, 0, 34, {end_col = 36, conceal = ''})
+            local opts = require('mdwrap.integrations.render_markdown').extend({})
+            opts.on.render({buf = vim.api.nvim_get_current_buf(), win = vim.api.nvim_get_current_win()})
+        """)
+        self.settle()
+        self.assertTrue(self.marks())
+        self.assertEqual(self.rows(3), ["First sentence.", "Second sentence.", "Last sentence."])
+
+    def test_visible_gap_bytes_still_use_native_wrap(self):
+        self.source(["First sentence. **Second sentence.** Last sentence."])
+        self.editor.ui_try_resize(24, 16)
+        self.editor.exec_lua("""
+            local original = require('mdwrap.atoms').atomize_mapped
+            require('mdwrap.atoms').atomize_mapped = function(...)
+                local mapped, hidden = original(...)
+                mapped[5].sc = mapped[5].sc + 1
+                return mapped, hidden
+            end
+            local opts = require('mdwrap.integrations.render_markdown').extend({})
+            opts.on.render({buf = vim.api.nvim_get_current_buf(), win = vim.api.nvim_get_current_win()})
+        """)
+        self.settle()
+        self.assertFalse(self.marks())
+        self.assertEqual(self.editor.exec_lua("return _G.display_messages"), [])
+
     def test_spaces_are_not_normalized(self):
         self.render(["First.   Second.   Third.   Fourth."], width=24)
         self.assertEqual(self.rows(2), ["First.   Second.", "Third.   Fourth."])
@@ -509,6 +549,42 @@ class DisplayTests(unittest.TestCase):
         self.editor.command("MdwrapDisplay disable")
         self.settle()
         self.assertEqual(self.option("showbreak"), "NEW")
+
+    def test_explicit_managed_values_survive_disable(self):
+        self.render(["First sentence. Second sentence. Last sentence."])
+        self.editor.command("setlocal wrap nolinebreak nobreakindent nolist showbreak=NONE")
+        self.settle()
+        self.editor.command("MdwrapDisplay disable")
+        self.settle()
+        self.assertTrue(self.option("wrap"))
+        self.assertFalse(self.option("linebreak"))
+        self.assertFalse(self.option("breakindent"))
+        self.assertFalse(self.option("list"))
+        self.assertEqual(self.option("showbreak"), "NONE")
+
+    def test_global_only_option_changes_do_not_replace_saved_local_values(self):
+        self.render(["First sentence. Second sentence. Last sentence."])
+        self.editor.command("setglobal wrap nolinebreak nobreakindent nolist showbreak=NONE")
+        self.settle()
+        self.editor.command("MdwrapDisplay disable")
+        self.settle()
+        self.assertFalse(self.option("wrap"))
+        self.assertTrue(self.option("linebreak"))
+        self.assertTrue(self.option("breakindent"))
+        self.assertTrue(self.option("list"))
+        self.assertEqual(self.editor.api.get_option_value("showbreak", {"scope": "local", "win": 0}), "")
+
+    def test_explicit_option_changes_are_saved_in_the_target_window(self):
+        self.render(["First sentence. Second sentence. Last sentence."], width=80)
+        original = self.editor.current.window.handle
+        self.editor.command("vsplit")
+        self.settle()
+        self.editor.api.set_option_value("wrap", True, {"win": original, "scope": "local"})
+        self.settle()
+        self.editor.command("MdwrapDisplay disable")
+        self.settle()
+        self.assertTrue(self.editor.api.get_option_value("wrap", {"win": original, "scope": "local"}))
+        self.assertFalse(self.option("wrap"))
 
     def test_global_local_option_inheritance_is_restored(self):
         self.render(["First sentence. Second sentence. Last sentence."])
