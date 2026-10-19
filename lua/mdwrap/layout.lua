@@ -554,16 +554,6 @@ local function wrap_core(atoms, opts, planning)
     end
     st.k, st.cum_hi = k, k
 
-    if k < start then
-      -- 单 token 自身超宽（长 URL / 超长代码）：独占一行，允许超宽（4.3.6）。
-      -- 它**没有可选落点**，故不定档、不扫候选、不经回落；`settleable = false` 即此意。
-      -- 主线的这一支与改版前的 `k < i` 分支逐字对应；前瞻撞上它则如实报「超宽」。
-      st.min_tier = punct_only and TIER_ATOMIC or TIER_HAN
-      st.punct_far, st.punct_ok, st.settleable = nil, nil, false
-      local tw = tokens[start].width
-      return start, tw, tw > avail_in
-    end
-
     -- 3) 定本行准入档：拟合区 [start,k] 内的最高静态档位一趟扫出，即可定档——
     --    「区间内按某口径有无断点」等价于「区间最高档 >= 该口径阈值」。严格模式的三档阶梯：
     --      第一档 TIER_ATOMIC：只认 ZWSP／纯拉丁或涉中文的普通空格／全角标点旁／atomic 边界；
@@ -703,7 +693,7 @@ local function wrap_core(atoms, opts, planning)
   ---   * 拟合区内**有**标点候选 → 取最远且过 allow_c 下限者；一个都没过下限 → 见下面的前瞻；
   ---   * 拟合区内**一个标点候选都没有** → 维持现状，落在最好的排版断点上
   ---     （既有裁定：atomic 边界恒可断）。
-  --- 超宽单 token 出口、ZWSP 出口、溢出到标点出口与「退无可退」出口不经此函数
+  --- ZWSP 出口、溢出到标点出口与「退无可退」出口不经此函数
   --- （`fit_line` 回传的 `settleable == false`）。
   local function settle(st, e)
     if not strict_end then return e end
@@ -713,12 +703,13 @@ local function wrap_core(atoms, opts, planning)
     if not st.punct_far then return e end          -- 零标点候选：维持现状
     if st.punct_ok then return st.punct_ok end
     -- 有标点候选，但一个都没过 allow_c 下限。两条退路：回落到那个偏短的标点，或整行溢出。
-    -- **判据不是「落点有多短」，而是「回落之后是不是仍然要吐一个超宽行」**——用户抱怨的
-    -- 「两头都坏」是一个复合现象（4 列的行后面跟一个 82 列的行），不是单看短行那一头。
-    --   * 回落后下一行放得下（不超宽）→ 回落是纯赚，短行换来的是一个正常行；
-    --   * 回落后下一行照样超宽   → 回落只是在超宽行前面多切一刀短行，两头都坏，宁可溢出。
+    -- 判据是回落后下一行的原始落点是否超宽，不再用当前落点的长度比例猜测：
+    --   * 下一行的原始落点不超宽 → 保留回落，避免本行直接大幅溢出；
+    --   * 下一行的原始落点仍超宽 → 宁可本行溢出，避免在超宽行前再切一刀短行。
+    -- 前瞻不模拟 settle 或 merge_short_tail；后者仍可把下一行有限撑宽（≤ avail/4）。
+    -- 因此不保证最终完全消除「短行 + 紧跟超宽行」，也不是段落最优排版。
     --
-    -- 「下一行会不会超宽」这个量**过去根本没算过**，只拿落点的短去猜：`cum[fallback] * 4 >= avail`。
+    -- 「下一行原始落点会不会超宽」过去没算过，只拿落点的短去猜：`cum[fallback] * 4 >= avail`。
     -- 拿百分比阈值去猜必然两头不讨好：1/2 会把「48 列 / 100 列可用宽 + 下一行 73 列」这种纯赚
     -- 的回落误判成溢出（用户报过的 bug），调到 1/4 救回了它，但已知反例上只剩 10% 余量，
     -- 再来一个反例就又得调。当初放弃精确前瞻的理由是「准确的前瞻要把整条档位阶梯复制一遍才
@@ -733,7 +724,7 @@ local function wrap_core(atoms, opts, planning)
     local fallback = (qual[e] > LV_NORMAL) and e or st.punct_far
     if fallback >= m then return fallback end -- 回落即落到段尾，没有「下一行」可谈
     local _, _, overflows = fit_line(st_la, fallback + 1, avail_rest)
-    if not overflows then return fallback end   -- 回落纯赚
+    if not overflows then return fallback end
     return overflow_from(st.k > e and st.k or e) -- 回落只是在超宽行前多切一刀
   end
 
@@ -791,7 +782,7 @@ local function wrap_core(atoms, opts, planning)
     -- 6) 回落收尾（仅 settleable 的出口适用）
     if st_main.settleable and not planning then endj = settle(st_main, endj) end
     -- 7) 短尾巴并入（见 merge_short_tail 的说明）。放在所有出口之后、拼装之前，
-    --    使六个出口一视同仁；超宽单 token 出口落点即 i，其后若紧跟句末也该并入。
+    --    使六个出口一视同仁；超宽单 token 落点即 i，其后若紧跟句末也该并入。
     if not planning then endj = merge_short_tail(st_main, endj) end
 
     -- 8) 拼装本行文本（token 间若原有空格则补一个；行尾空白稍后清理）
