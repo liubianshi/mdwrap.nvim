@@ -327,11 +327,19 @@ M._LV = { NORMAL = LV_NORMAL, SERIES = LV_SERIES, CLAUSE = LV_CLAUSE,
 -- 折行核心（4.3.1 / 4.3.2 / 4.3.4 / 4.3.6）
 -- ----------------------------------------------------------------------------
 
+local function with_text(original, text)
+  local result = {}
+  for key, value in pairs(original) do result[key] = value end
+  result.text = text
+  return result
+end
+
 --- 贪心折行。
 ---@param atoms mdwrap.Atom[] 原子数组
 ---@param opts mdwrap.LayoutOpts
----@return string[] lines
-function M.wrap(atoms, opts)
+---@param planning boolean
+---@return string[]|mdwrap.PlannedLine[]|nil
+local function wrap_core(atoms, opts, planning)
   opts = opts or {}
   local width = opts.width or 80
   local prefix_first = opts.prefix_first or ""
@@ -362,35 +370,43 @@ function M.wrap(atoms, opts)
   -- 1) 原子 → token + gap 元信息。
   --    space 折叠进 token 间隙；ZWSP 是**最高优先级断行机会且保留**：其文本并入前一
   --    token 末尾（断行时留在上一行行尾，零宽），并标记该 token 之后为 zwsp 优先断点。
-  local tokens, gap = {}, {}
+  local tokens, gap, source_indices = {}, {}, {}
   local zwsp_after = {}
   local pend_space = false
   local pend_zwsp_text = nil
-  for _, a in ipairs(atoms) do
-    if a.class == "space" then
+  local pending_width = 0
+  for source_index, original in ipairs(atoms) do
+    if original.class == "space" then
       pend_space = true
-    elseif a.class == "zwsp" then
+      pending_width = pending_width + original.width
+    elseif original.class == "zwsp" then
       if #tokens > 0 then
-        tokens[#tokens].text = tokens[#tokens].text .. a.text
+        tokens[#tokens] = with_text(tokens[#tokens], tokens[#tokens].text .. original.text)
         zwsp_after[#tokens] = true
       else
-        pend_zwsp_text = (pend_zwsp_text or "") .. a.text -- 段首 ZWSP：留给下一 token
+        pend_zwsp_text = (pend_zwsp_text or "") .. original.text -- 段首 ZWSP：留给下一 token
       end
     else
-      local tok = a
+      local token = original
       if pend_zwsp_text then
-        tok = { text = pend_zwsp_text .. a.text, width = a.width, class = a.class, atomic_kind = a.atomic_kind }
+        token = with_text(original, pend_zwsp_text .. original.text)
         pend_zwsp_text = nil
       end
-      tokens[#tokens + 1] = tok
-      gap[#tokens] = { space = pend_space } -- 该 token 之「前」的间隙
+      tokens[#tokens + 1] = token
+      if planning then source_indices[#tokens] = source_index end
+      gap[#tokens] = { space = pend_space, width = planning and pending_width or 1 } -- 该 token 之「前」的间隙
       pend_space = false
+      pending_width = 0
     end
   end
   local m = #tokens
   if m == 0 then return {} end
 
   local function gmeta(k) return gap[k] or { space = false } end
+  local function gap_width(index)
+    local meta = gmeta(index)
+    return meta.space and meta.width or 0
+  end
 
   -- 括号配对作整体（bracket_as_unit）：用栈匹配配对括号；组宽 ≤ 续行整行可用宽时，锁定组内
   -- 所有间隙（不在括号内部断），宁可整组移到下一行（组前 `（` 之「前」仍可断）；组宽超一行才
@@ -413,7 +429,7 @@ function M.wrap(atoms, opts)
           local gw = 0
           for t = g.idx, idx do
             gw = gw + tokens[t].width
-            if t > g.idx and gmeta(t).space then gw = gw + 1 end
+            if t > g.idx then gw = gw + gap_width(t) end
           end
           if gw <= avail_full then
             for k = g.idx + 1, idx do locked_gap[k] = true end
@@ -493,6 +509,13 @@ function M.wrap(atoms, opts)
     return t
   end
 
+  local function fits_screen(state, index)
+    local measured = state.cum[index]
+    return measured <= state.avail and (index == m or
+      (measured + gap_width(index + 1) <= state.avail and
+        can_break_after(tokens[index]) and can_break_before(tokens[index + 1])))
+  end
+
   -- ----------------------------------------------------------------------------
   -- fit_line：按档位阶梯定出一行的**原始落点**
   -- ----------------------------------------------------------------------------
@@ -507,7 +530,7 @@ function M.wrap(atoms, opts)
   ---@param st table       逐行状态容器（new_state 产出）
   ---@param start integer  本行起始 token 下标
   ---@param avail_in integer 本行可用宽
-  ---@return integer endj_raw  原始落点（未经回落／并入）
+  ---@return integer? endj_raw  原始落点（未经回落／并入）
   ---@return integer line_width 落点处的行宽
   ---@return boolean overflowed 行宽是否超出 avail_in
   local function fit_line(st, start, avail_in)
@@ -522,7 +545,7 @@ function M.wrap(atoms, opts)
     do
       local t = start
       while t <= m do
-        local sp = (t > start and gmeta(t).space) and 1 or 0
+        local sp = t > start and gap_width(t) or 0
         local nw = w + sp + tokens[t].width
         if nw > avail_in and t > start then break end
         w, cum[t], k = nw, nw, t
@@ -530,16 +553,6 @@ function M.wrap(atoms, opts)
       end
     end
     st.k, st.cum_hi = k, k
-
-    if k < start then
-      -- 单 token 自身超宽（长 URL / 超长代码）：独占一行，允许超宽（4.3.6）。
-      -- 它**没有可选落点**，故不定档、不扫候选、不经回落；`settleable = false` 即此意。
-      -- 主线的这一支与改版前的 `k < i` 分支逐字对应；前瞻撞上它则如实报「超宽」。
-      st.min_tier = punct_only and TIER_ATOMIC or TIER_HAN
-      st.punct_far, st.punct_ok, st.settleable = nil, nil, false
-      local tw = tokens[start].width
-      return start, tw, tw > avail_in
-    end
 
     -- 3) 定本行准入档：拟合区 [start,k] 内的最高静态档位一趟扫出，即可定档——
     --    「区间内按某口径有无断点」等价于「区间最高档 >= 该口径阈值」。严格模式的三档阶梯：
@@ -549,15 +562,17 @@ function M.wrap(atoms, opts)
     --                          句末优先模式改为整段溢出到下一个标点，绝不在非标点处断。
     local best_tier = 0
     for tt = start, k do
-      local tier = (tt >= m) and TIER_FREE or adm[tt] -- 段尾恒可断
-      if tier > best_tier then best_tier = tier end
+      if not planning or fits_screen(st, tt) then
+        local tier = (tt >= m) and TIER_FREE or adm[tt] -- 段尾恒可断
+        if tier > best_tier then best_tier = tier end
+      end
     end
     local min_tier = punct_only and TIER_ATOMIC or TIER_HAN
     local overflow_to_punct = false
     if punct_only and best_tier < TIER_ATOMIC then
       min_tier = TIER_PANGU
       if best_tier < TIER_PANGU then
-        if wrap_sentence then min_tier = TIER_HAN else overflow_to_punct = true end
+        if wrap_sentence or planning then min_tier = TIER_HAN else overflow_to_punct = true end
       end
     end
     st.min_tier = min_tier
@@ -565,10 +580,11 @@ function M.wrap(atoms, opts)
     -- 4) 单趟扫描取候选：ZWSP（最高，保留）＞ sentence ＞ colon ＞ clause（4.3.4）。
     --    **按 qual 精确分槽**：顿号 LV_SERIES 不进 clause 槽——它若白捡 allow_c 那条短行
     --    容忍路径，行为就变了；它只在贪心填满到它、或作 punct_far 回落点时才断。
-    local zbest, sent, colon, clause
+    local zbest, sent, colon, clause, farthest
     local punct_far, punct_ok
     for tt = start, k do
-      if after_breakable(tt, min_tier) then
+      if after_breakable(tt, min_tier) and (not planning or fits_screen(st, tt)) then
+        if planning then farthest = tt end
         if zwsp_after[tt] then zbest = tt end -- 取拟合区内最远的 ZWSP 断点
         -- 最远标点断点（无短行下限，供回落用）；非严格模式下无人消费，不必算。
         if strict_end and punct_break(tt) then
@@ -610,8 +626,10 @@ function M.wrap(atoms, opts)
       endj, settleable = colon, true
     elseif (not wrap_sentence) and clause then
       endj, settleable = clause, true
-    elseif after_breakable(k, min_tier) then
+    elseif after_breakable(k, min_tier) and (not planning or fits_screen(st, k)) then
       endj, settleable = k, true -- 普通贪心断点
+    elseif planning then
+      endj, settleable = farthest, false
     else
       -- 6) 拟合边界落在不可断间隙：按原因分流（4.3.2）
       local next_no_before = (k + 1 <= m) and (not can_break_before(tokens[k + 1]))
@@ -640,13 +658,14 @@ function M.wrap(atoms, opts)
       end
     end
     st.settleable = settleable
+    if not endj then return nil, 0, true end
 
     -- 落点处的行宽：拟合区内的落点直接查 cum；区外的（PULL / 溢出）自 k 续量。
     local lw = cum[endj]
     if not lw then
       lw = cum[k] or 0
       for t = k + 1, endj do
-        if t > start and gmeta(t).space then lw = lw + 1 end
+        if t > start then lw = lw + gap_width(t) end
         lw = lw + tokens[t].width
       end
     end
@@ -674,7 +693,7 @@ function M.wrap(atoms, opts)
   ---   * 拟合区内**有**标点候选 → 取最远且过 allow_c 下限者；一个都没过下限 → 见下面的前瞻；
   ---   * 拟合区内**一个标点候选都没有** → 维持现状，落在最好的排版断点上
   ---     （既有裁定：atomic 边界恒可断）。
-  --- 超宽单 token 出口、ZWSP 出口、溢出到标点出口与「退无可退」出口不经此函数
+  --- ZWSP 出口、溢出到标点出口与「退无可退」出口不经此函数
   --- （`fit_line` 回传的 `settleable == false`）。
   local function settle(st, e)
     if not strict_end then return e end
@@ -684,12 +703,13 @@ function M.wrap(atoms, opts)
     if not st.punct_far then return e end          -- 零标点候选：维持现状
     if st.punct_ok then return st.punct_ok end
     -- 有标点候选，但一个都没过 allow_c 下限。两条退路：回落到那个偏短的标点，或整行溢出。
-    -- **判据不是「落点有多短」，而是「回落之后是不是仍然要吐一个超宽行」**——用户抱怨的
-    -- 「两头都坏」是一个复合现象（4 列的行后面跟一个 82 列的行），不是单看短行那一头。
-    --   * 回落后下一行放得下（不超宽）→ 回落是纯赚，短行换来的是一个正常行；
-    --   * 回落后下一行照样超宽   → 回落只是在超宽行前面多切一刀短行，两头都坏，宁可溢出。
+    -- 判据是回落后下一行的原始落点是否超宽，不再用当前落点的长度比例猜测：
+    --   * 下一行的原始落点不超宽 → 保留回落，避免本行直接大幅溢出；
+    --   * 下一行的原始落点仍超宽 → 宁可本行溢出，避免在超宽行前再切一刀短行。
+    -- 前瞻不模拟 settle 或 merge_short_tail；后者仍可把下一行有限撑宽（≤ avail/4）。
+    -- 因此不保证最终完全消除「短行 + 紧跟超宽行」，也不是段落最优排版。
     --
-    -- 「下一行会不会超宽」这个量**过去根本没算过**，只拿落点的短去猜：`cum[fallback] * 4 >= avail`。
+    -- 「下一行原始落点会不会超宽」过去没算过，只拿落点的短去猜：`cum[fallback] * 4 >= avail`。
     -- 拿百分比阈值去猜必然两头不讨好：1/2 会把「48 列 / 100 列可用宽 + 下一行 73 列」这种纯赚
     -- 的回落误判成溢出（用户报过的 bug），调到 1/4 救回了它，但已知反例上只剩 10% 余量，
     -- 再来一个反例就又得调。当初放弃精确前瞻的理由是「准确的前瞻要把整条档位阶梯复制一遍才
@@ -704,7 +724,7 @@ function M.wrap(atoms, opts)
     local fallback = (qual[e] > LV_NORMAL) and e or st.punct_far
     if fallback >= m then return fallback end -- 回落即落到段尾，没有「下一行」可谈
     local _, _, overflows = fit_line(st_la, fallback + 1, avail_rest)
-    if not overflows then return fallback end   -- 回落纯赚
+    if not overflows then return fallback end
     return overflow_from(st.k > e and st.k or e) -- 回落只是在超宽行前多切一刀
   end
 
@@ -733,7 +753,7 @@ function M.wrap(atoms, opts)
     local limit = st.avail / 4
     local w2 = 0
     for t = endj + 1, m do
-      if t > endj + 1 and gmeta(t).space then w2 = w2 + 1 end
+      if t > endj + 1 then w2 = w2 + gap_width(t) end
       w2 = w2 + tokens[t].width
       if w2 > limit then return endj end -- 尾巴不算短，维持原落点
       if qual[t] == LV_SENTENCE and t < m and after_breakable(t, st.min_tier) then return t end
@@ -758,24 +778,46 @@ function M.wrap(atoms, opts)
 
     -- 2)–5) 按档位阶梯定出本行原始落点
     local endj = fit_line(st_main, i, avail)
+    if not endj then return nil end
     -- 6) 回落收尾（仅 settleable 的出口适用）
-    if st_main.settleable then endj = settle(st_main, endj) end
+    if st_main.settleable and not planning then endj = settle(st_main, endj) end
     -- 7) 短尾巴并入（见 merge_short_tail 的说明）。放在所有出口之后、拼装之前，
-    --    使六个出口一视同仁；超宽单 token 出口落点即 i，其后若紧跟句末也该并入。
-    endj = merge_short_tail(st_main, endj)
+    --    使六个出口一视同仁；超宽单 token 落点即 i，其后若紧跟句末也该并入。
+    if not planning then endj = merge_short_tail(st_main, endj) end
 
     -- 8) 拼装本行文本（token 间若原有空格则补一个；行尾空白稍后清理）
-    local parts = {}
-    for tt = i, endj do
-      if tt > i and gmeta(tt).space then parts[#parts + 1] = " " end
-      parts[#parts + 1] = tokens[tt].text
+    if planning then
+      lines[#lines + 1] = {
+        first = source_indices[i],
+        last = source_indices[endj],
+      }
+    else
+      local parts = {}
+      for tt = i, endj do
+        if tt > i and gmeta(tt).space then parts[#parts + 1] = " " end
+        parts[#parts + 1] = tokens[tt].text
+      end
+      lines[#lines + 1] = (prefix .. table.concat(parts)):gsub("%s+$", "")
     end
-    lines[#lines + 1] = (prefix .. table.concat(parts)):gsub("%s+$", "")
     i = endj + 1
     line_idx = line_idx + 1
   end
 
   return lines
+end
+
+---@param atoms mdwrap.Atom[]
+---@param opts mdwrap.LayoutOpts
+---@return string[]
+function M.wrap(atoms, opts)
+  return wrap_core(atoms, opts, false) --[[@as string[] ]]
+end
+
+---@param atoms mdwrap.Atom[]
+---@param opts mdwrap.LayoutOpts
+---@return mdwrap.PlannedLine[]|nil
+function M.plan(atoms, opts)
+  return wrap_core(atoms, opts, true) --[[@as mdwrap.PlannedLine[]|nil]]
 end
 
 return M

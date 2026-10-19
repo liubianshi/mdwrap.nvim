@@ -25,6 +25,11 @@
 -- 调用方（init.process_wrap）再用 block 的 prefix/merge 段映射翻译成逻辑串坐标喂 atomize。
 
 local M = {}
+local ignored_namespaces = {}
+
+function M.ignore_namespace(namespace)
+  ignored_namespaces[namespace] = true
+end
 
 --- 一条归一化的渲染增量标记。
 --- [cs,ce) 为隐藏字节区间（cs==ce 表示纯加宽锚点，无隐藏）；add 为 inline virt_text 图标
@@ -34,6 +39,7 @@ local M = {}
 ---@field cs integer   0-indexed 起始字节列（含）
 ---@field ce integer   0-indexed 结束字节列（不含）
 ---@field add integer  附加视觉宽（≥0），锚定在 cs
+---@field inline? integer
 
 --- 读取 [srow,erow]（0-indexed 闭区间）内的持久 conceal / inline-virt_text extmark，
 --- 归一化为 Mark 列表（buffer 坐标）。
@@ -50,39 +56,64 @@ local M = {}
 ---@param srow integer  0-indexed 起始行（含）
 ---@param erow integer  0-indexed 结束行（含）
 ---@param expected_lines string[]? 全文档行（按绝对 row 索引：expected_lines[row+1]）
+---@param opts {conceal?:boolean, conceallevel?:integer, overlap?:boolean, win?:integer}?
 ---@return mdwrap.Mark[]
-function M.gather(bufnr, srow, erow, expected_lines)
+---@return boolean?
+function M.gather(bufnr, srow, erow, expected_lines, opts)
+  opts = opts or {}
   ---@type mdwrap.Mark[]
   local marks = {}
   if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then return marks end
   local ok, raw = pcall(vim.api.nvim_buf_get_extmarks, bufnr, -1,
-    { srow, 0 }, { erow, -1 }, { details = true })
-  if not ok or not raw then return marks end
+    { srow, 0 }, { erow, -1 }, { details = true, overlap = opts.overlap or nil })
+  if not ok or not raw then return marks, true end
 
   -- 失同步保护用：一次性取范围内 buffer 行，逐 mark 比对（避免每 mark 一次 API 往返）。
   local buf_lines = expected_lines and vim.api.nvim_buf_get_lines(bufnr, srow, erow + 1, false) or nil
 
+  local unsafe = false
+  local scopes = {}
   for _, m in ipairs(raw) do
     local row, col, d = m[2], m[3], m[4]
-    if d then
+    ---@cast d table
+    if d and not ignored_namespaces[d.ns_id] then
       -- 失同步保护：该 buffer 行与传入 lines 不一致 → 弃该行所有 extmark。
       local valid = true
+      if opts.win and type(vim.api.nvim__ns_get) == "function" then
+        local scope = scopes[d.ns_id]
+        if not scope then
+          local scope_ok
+          scope_ok, scope = pcall(vim.api.nvim__ns_get, d.ns_id)
+          if not scope_ok then return marks, true end
+          scopes[d.ns_id] = scope
+        end
+        if scope.wins and #scope.wins > 0 then
+          valid = false
+          for _, window in ipairs(scope.wins) do
+            if window == opts.win then valid = true; break end
+          end
+        end
+      end
       if buf_lines and expected_lines then -- and expected_lines 仅为类型收窄；buf_lines 非空即蕴含其非空
         if buf_lines[row - srow + 1] ~= expected_lines[row + 1] then valid = false end
       end
 
       if valid then
-        local cs, ce, add = col, col, 0
+        if d.conceal_lines or (d.conceal ~= nil and d.end_row and d.end_row ~= row)
+            or (d.virt_text_pos == "inline" and d.virt_text_repeat_linebreak) then
+          unsafe = true
+        end
+        local cs, ce, add, inline = col, col, 0, 0
 
         -- conceal：隐藏一段字节区间（end_col），conceal 为非空替换字符时其显示宽计入 add。
         ---@diagnostic disable-next-line: undefined-field  -- conceal_lines 是较新 nvim extmark 字段，本机 LuaLS vim 类型未收录
-        if d.conceal ~= nil and not d.conceal_lines then
+        if opts.conceal ~= false and d.conceal ~= nil and not d.conceal_lines then
           local er = d.end_row or row
           local ec = d.end_col or col
           if er == row and ec > col then
             cs, ce = col, ec
           end -- 跨行 conceal（er~=row）对行内宽度无明确语义，按纯锚点处理（不隐藏）
-          if type(d.conceal) == "string" and d.conceal ~= "" then
+          if opts.conceallevel ~= 3 and type(d.conceal) == "string" and d.conceal ~= "" then
             add = add + vim.fn.strdisplaywidth(d.conceal)
           end
         end
@@ -90,17 +121,18 @@ function M.gather(bufnr, srow, erow, expected_lines)
         -- inline virt_text：在 col 处插图标，净加其显示宽。
         if d.virt_text and d.virt_text_pos == "inline" then
           for _, chunk in ipairs(d.virt_text) do
-            add = add + vim.fn.strdisplaywidth(chunk[1] or "")
+            inline = inline + vim.fn.strdisplaywidth(chunk[1] or "")
           end
         end
+        add = add + inline
 
         if ce > cs or add > 0 then
-          marks[#marks + 1] = { row = row, cs = cs, ce = ce, add = add }
+          marks[#marks + 1] = { row = row, cs = cs, ce = ce, add = add, inline = inline }
         end
       end
     end
   end
-  return marks
+  return marks, unsafe
 end
 
 return M

@@ -164,6 +164,9 @@ check("overflow single atom", layout.wrap({
 }, { width = 20 }),
   { "前", "https://example.com/a/very/long/path", "后" })
 
+check("overflow first word uses normal fit path", wrap(string.rep("x", 50) .. " end", { width = 20 }),
+  { string.rep("x", 50), "end" })
+
 -- ============================================================
 -- cleanup：行尾空白 + 三连以上空行压缩为两个
 -- ============================================================
@@ -412,6 +415,11 @@ check("短尾巴并入本行（允许有限超宽）",
     STRICT(80)),
   { "投出的一侧同样如此，中国的对外直接投资头寸至今仍有六成记在中国香港名下，十年未降。",
     "这一偏离不是随机的记账噪声，各自记录到的投向对方的投资持续增加。" })
+
+check("前瞻只判原始落点，保留短尾巴并入的有限超宽",
+  wrap(string.rep("甲", 20) .. "，" .. string.rep("乙", 28) .. "，" .. string.rep("丙", 4) .. "。丁。",
+    STRICT(60)),
+  { string.rep("甲", 20) .. "，", string.rep("乙", 28) .. "，" .. string.rep("丙", 4) .. "。", "丁。" })
 
 -- 尾巴不短时不并入：句号远在 avail/4 之外，维持原落点，不把整段黏成一行。
 check("尾巴不短则不并入",

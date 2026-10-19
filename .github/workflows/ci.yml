@@ -40,16 +40,19 @@ jobs:
         run: luacheck lua/
 
   editor:
-    name: editor (golden + invariants + typecheck)
+    name: editor ${{ matrix.neovim }} (golden + display + typecheck)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        neovim: [v0.11.0, stable]
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Neovim (stable)
+      - name: Install Neovim
         uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
-          version: stable
+          version: ${{ matrix.neovim }}
 
       - name: Install LuaJIT + pandoc
         # luajit 供 run_typecheck.sh 的 no-vim 冒烟；pandoc 供 golden 不变量③（缺则自动跳过）
@@ -72,6 +75,22 @@ jobs:
       - name: Golden tests + 3 invariants
         run: tests/run_golden.sh
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install display-test dependencies
+        run: |
+          python3 -m pip install -r tests/requirements-display.txt
+          git clone --depth 1 --branch v8.14.0 \
+            https://github.com/MeanderingProgrammer/render-markdown.nvim "$RUNNER_TEMP/render-markdown.nvim"
+
+      - name: Display tests with real renderer
+        env:
+          RENDER_MARKDOWN_PATH: ${{ runner.temp }}/render-markdown.nvim
+          REQUIRE_RENDER_MARKDOWN: '1'
+        run: tests/run_display.sh
+
       - name: Install lua-language-server
         run: |
           LLS_URL=$(curl -fsSL https://api.github.com/repos/LuaLS/lua-language-server/releases/latest \
@@ -83,3 +102,15 @@ jobs:
 
       - name: Type check (lua-language-server, injects real VIMRUNTIME)
         run: tests/run_typecheck.sh
+
+  compatibility:
+    name: Neovim 0.10 display fallback
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: v0.10.4
+      - name: Unsupported display API leaves hard wrapping available
+        run: nvim --headless --clean -u NONE -l tests/display/test_compat.lua
