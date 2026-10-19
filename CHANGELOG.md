@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-19
+
 ### Added
 
 - 可选的 render-markdown.nvim 显示折行集成：
