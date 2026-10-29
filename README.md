@@ -126,6 +126,7 @@ use({ "liubianshi/mdwrap.nvim", config = function() require("mdwrap").setup({}) 
     return require("mdwrap.integrations.render_markdown").extend(opts, {
       wrap_sentence = true,
       max_width = 120,
+      insert_mode = "native",
     })
   end,
 }
@@ -138,6 +139,7 @@ use({ "liubianshi/mdwrap.nvim", config = function() require("mdwrap").setup({}) 
 require("render-markdown").setup(require("mdwrap.integrations.render_markdown").extend(opts, {
   wrap_sentence = true,
   max_width = 120,
+  insert_mode = "native",
 }))
 ```
 
@@ -148,6 +150,32 @@ require("render-markdown").setup(require("mdwrap.integrations.render_markdown").
 断点按 `min(窗口正文宽度, max_width)` 规划：宽窗口不继续拉长，窄窗口仍随窗口收缩。
 不指定 `max_width` 时不设上限；它不改变窗口大小、全局选项或源文件。
 
+`insert_mode` 控制插入模式中编辑行的折行方式，默认值为 `"native"`。
+此时只有活动窗口正在编辑的物理源行撤去 mdwrap 断点，退回按窗口宽度进行原生软折行；
+该源行的所有屏幕续行都受影响，但其他源行和其他窗口仍保持 mdwrap 折行。
+编辑行临时不受 `max_width` 限制，移动到另一源行或退出插入模式后自动恢复。
+
+设为 `insert_mode = "wrap"`，编辑行也会持续使用 mdwrap 折行，随输入重新计算断点。
+文本和窗口正文宽度不变时，进入插入模式沿用原有源文本断点；
+语法标记显露或渲染图标消失时，只调整虚拟填充和续行缩进，不因显隐重新选择断点。
+为保持断点，显露的语法可能使屏幕行暂时超过 `max_width`，但不会超过窗口正文宽度。
+输入、删除、调整窗口或折行配置时，按当前实际显示宽度重新规划；原断点放不下时也会重新规划。
+因此实际编辑仍可能改变断点和屏幕光标位置，但虚拟填充空格不会写入源文件。
+下述安全回退在这两种策略下仍有效。
+
+字符、行和块可视模式（`v`、`V`、`Ctrl-V`）中，选区内外的段落都保持显示折行，
+不受 `insert_mode` 影响。
+选区扩展、缩小时，按 `concealcursor` 的 `v` 设置及上游 `anti_conceal` 调整语法显隐。
+文本、正文宽度及折行配置不变时，优先沿用原断点，只调整填充和续行缩进。
+与 `"wrap"` 插入策略相同，显露的语法可能使行暂时超过 `max_width`；
+原断点超出窗口正文宽度时重新规划。
+
+插入和可视模式中都需要 render-markdown 本身仍启用渲染：
+可设置 `render_modes = true`，或在原有 `render_modes` 列表中加入所需模式。
+插入模式为 `"i"`，字符、行和块可视模式分别为 `"v"`、`"V"`、`"\22"`。
+适配器不会修改这项配置，也不会覆盖 `concealcursor` 或 `anti_conceal`；
+若上游在这些模式停止渲染，mdwrap 也会清理显示标记并恢复窗口选项。
+
 只加载 mdwrap 或执行 `:MdwrapDisplay` 不会自动接入 render-markdown。
 这里的 `set_formatexpr = false` 让 `gq` 不接管硬折行；若仍需原有 `gq` 功能，可以省略该选项。
 也不要把 `MdwrapFormat` 或 conform 的 mdwrap 格式化器当作显示折行入口，它们会修改文本。
@@ -155,7 +183,7 @@ require("render-markdown").setup(require("mdwrap.integrations.render_markdown").
 `:MdwrapDisplay` 切换当前缓冲区的显示折行，作用于显示它的所有窗口；
 也可显式执行 `:MdwrapDisplay enable`、`:MdwrapDisplay disable`、`:MdwrapDisplay toggle`。
 适配器配置后、首次渲染前执行命令，会保留当前缓冲区的开关状态，待渲染回调触发后生效。
-插入、可视及其他非普通模式下会撤销显示标记并恢复窗口选项，回到普通模式后自动重建。
+替换、Select 及其他不支持的模式下会撤销显示标记并恢复窗口选项，回到普通模式后自动重建。
 关闭 render-markdown 渲染、切换缓冲区、关闭窗口时也会清理。
 显示期间临时接管 `wrap`、`linebreak`、`breakindent`、`showbreak`、`list`，关闭后恢复；
 不改全局选项，也不改用户的 Neovim 配置文件。

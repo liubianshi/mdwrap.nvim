@@ -51,6 +51,7 @@
 ---@class mdwrap.DisplayOpts
 ---@field wrap_sentence? boolean
 ---@field max_width? integer
+---@field insert_mode? "native"|"wrap"
 
 ---@class (partial) mdwrap.FormatOpts: mdwrap.Opts -- format_buffer / format_lines 额外接受范围限定（(partial) 须沿继承链显式传递，否则父类字段被当作必填）
 ---@field row_start? integer

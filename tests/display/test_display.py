@@ -80,16 +80,33 @@ class DisplayTests(unittest.TestCase):
             return rows
         """, count, window)
 
-    def marks(self):
+    def marks(self, window=0):
         return self.editor.exec_lua("""
+            local window = ...
+            local buffer = window == 0 and 0 or vim.api.nvim_win_get_buf(window)
             local result = {}
             for name, namespace in pairs(vim.api.nvim_get_namespaces()) do
-                if name:match('^mdwrap%.display%.') then
-                    vim.list_extend(result, vim.api.nvim_buf_get_extmarks(0, namespace, 0, -1, {details = true}))
+                if name:match('^mdwrap%.display%.') and (window == 0 or name == 'mdwrap.display.' .. window) then
+                    vim.list_extend(result, vim.api.nvim_buf_get_extmarks(buffer, namespace, 0, -1, {details = true}))
                 end
             end
             return result
-        """)
+        """, window)
+
+    def setup_renderer(self, display_options=None, render_options=None):
+        self.editor.exec_lua("vim.opt.runtimepath:append(...)", str(RENDER))
+        self.editor.exec_lua("""
+            local display_options, render_options = ...
+            local opts = vim.tbl_deep_extend('force', {
+                debounce = 0, render_modes = true,
+                anti_conceal = {enabled = true, disabled_modes = {'n'}, above = 0, below = 0},
+                win_options = {concealcursor = {rendered = 'n'}},
+                heading = {enabled = false}, code = {enabled = false}, sign = {enabled = false},
+            }, render_options)
+            _G.render_opts = require('mdwrap.integrations.render_markdown').extend(opts, display_options)
+            require('render-markdown').setup(_G.render_opts)
+            vim.cmd('runtime! plugin/render-markdown.lua')
+        """, display_options or {}, render_options or {})
 
     def snapshot(self):
         return self.editor.exec_lua("""
@@ -479,7 +496,7 @@ class DisplayTests(unittest.TestCase):
     def test_modes_and_option_restoration(self):
         self.render(["First sentence. Second sentence. Last sentence."])
         before = self.snapshot()
-        for key in ("i", "v", "V", "\x16"):
+        for key in ("R", "gh", "gH", "g\x08"):
             self.editor.input(key)
             self.settle()
             self.assertFalse(self.marks())
@@ -492,6 +509,457 @@ class DisplayTests(unittest.TestCase):
             self.settle()
             self.assertTrue(self.marks())
         self.assertEqual(before, self.snapshot())
+
+    def test_visual_modes_keep_all_paragraphs_wrapped(self):
+        line = "First sentence. Second sentence. Last sentence."
+        self.render([line, "", line, "", line], display_options={"max_width": 24})
+        before = self.snapshot()
+        screen = self.rows(11)
+        marks = self.marks()
+        for key in ("v", "V", "\x16"):
+            with self.subTest(mode=key):
+                self.editor.input(key)
+                self.settle()
+                self.assertEqual(self.marks(), marks)
+                self.assertEqual(self.rows(11), screen)
+                self.assertTrue(self.option("wrap"))
+                self.assertFalse(self.option("linebreak"))
+                self.editor.input("jj")
+                self.settle()
+                self.assertEqual(self.marks(), marks)
+                self.assertEqual(self.rows(11), screen)
+                self.editor.input("\x1bgg0")
+                self.settle()
+        self.assertEqual(before, self.snapshot())
+
+    def test_visual_selection_yanks_source_without_virtual_padding(self):
+        line = "First sentence. Second sentence. Last sentence."
+        self.render([line, line], display_options={"max_width": 24})
+        for keys, expected, kind in (
+            (f'v{len(line) - 1}l"ay', line, "v"),
+            ('V"ay', line + "\n", "V"),
+            ('\x16llj"ay', "Fir\nFir", "\x163"),
+        ):
+            with self.subTest(selection=keys):
+                self.editor.input("gg0" + keys)
+                self.settle()
+                self.assertEqual(self.editor.funcs.getreg("a"), expected)
+                self.assertEqual(self.editor.funcs.getregtype("a"), kind)
+                self.assertTrue(self.marks())
+        self.assertEqual(self.editor.current.buffer[:], [line, line])
+        self.assertFalse(self.editor.current.buffer.options["modified"])
+
+    def test_visual_range_measures_revealed_syntax_in_every_selected_row(self):
+        line = "中" * 8 + "**粗**" + "中" * 20
+        self.render([line, "", line, "", line], display_options={
+            "max_width": 20, "wrap_sentence": True,
+        })
+        before = self.snapshot()
+        original = [(mark[1], mark[2]) for mark in self.marks()]
+        self.editor.exec_lua("""
+            _G.conceal_rows = {}
+            local conceal = require('mdwrap.conceal')
+            local gather = conceal.gather
+            conceal.gather = function(buffer, first, last, lines, opts)
+                _G.conceal_rows[first + 1] = opts.conceal
+                return gather(buffer, first, last, lines, opts)
+            end
+        """)
+        self.editor.input("vjj")
+        self.settle()
+        self.assertEqual([(mark[1], mark[2]) for mark in self.marks()], original)
+        self.assertEqual(self.editor.exec_lua("return {_G.conceal_rows[1], _G.conceal_rows[3], _G.conceal_rows[5]}"),
+                         [False, False, True])
+        self.assertIn("*", self.rows(7)[0])
+        self.assertIn("*", self.rows(7)[4])
+        self.editor.input("kk")
+        self.settle()
+        self.assertEqual(self.editor.exec_lua("return {_G.conceal_rows[1], _G.conceal_rows[3], _G.conceal_rows[5]}"),
+                         [False, True, True])
+        self.editor.command("setlocal concealcursor=nv")
+        self.settle()
+        self.assertNotIn("*", "".join(self.rows(11)))
+        self.assertEqual(before, self.snapshot())
+
+    def test_visual_selection_does_not_release_other_windows(self):
+        line = "中" * 8 + "**粗**" + "中" * 20
+        self.render([line], width=90, display_options={"max_width": 20, "wrap_sentence": True})
+        original = self.editor.current.window.handle
+        self.editor.command("vsplit")
+        active = self.editor.current.window.handle
+        self.settle()
+        inactive_screen = self.rows(5, original)
+        inactive_marks = self.marks(original)
+        active_columns = [mark[2] for mark in self.marks(active)]
+        for key in ("v", "V", "\x16"):
+            with self.subTest(mode=key):
+                self.editor.input(key)
+                self.settle()
+                self.assertEqual(self.marks(original), inactive_marks)
+                self.assertIn("*", "".join(self.rows(5, original)))
+                self.assertEqual([mark[2] for mark in self.marks(active)], active_columns)
+                self.assertIn("*", "".join(self.rows(5, active)))
+                self.assertTrue(self.editor.api.win_get_option(original, "wrap"))
+                self.editor.input("\x1b")
+                self.settle()
+                self.assertEqual(self.rows(5, original), inactive_screen)
+
+    def test_insert_default_only_releases_active_source_row(self):
+        line = "First sentence. Second sentence. Last sentence."
+        self.render([line, "", line], display_options={"max_width": 24})
+        self.editor.funcs.setreg("a", "unchanged")
+        before = self.snapshot()
+        self.assertEqual({mark[1] for mark in self.marks()}, {0, 2})
+        self.editor.input("i")
+        self.settle()
+        self.assertEqual({mark[1] for mark in self.marks()}, {2})
+        self.assertTrue(self.option("wrap"))
+        self.assertFalse(self.option("linebreak"))
+        self.assertFalse(self.option("breakindent"))
+        self.assertFalse(self.option("list"))
+        self.assertEqual(self.option("showbreak"), "NONE")
+        self.assertEqual(self.rows(2), [line[:40], line[40:]])
+        self.editor.input("<Down><Down>")
+        self.settle()
+        self.assertEqual(self.editor.current.window.cursor[0], 3)
+        self.assertEqual({mark[1] for mark in self.marks()}, {0})
+        self.editor.input("\x1b")
+        self.settle()
+        self.assertEqual({mark[1] for mark in self.marks()}, {0, 2})
+        self.assertEqual(before, self.snapshot())
+
+    def test_insert_native_policy_follows_split_focus(self):
+        line = "First sentence. Second sentence. Last sentence."
+        self.render([line], width=90, display_options={"max_width": 24})
+        original = self.editor.current.window.handle
+        self.editor.command("vsplit")
+        active = self.editor.current.window.handle
+        self.editor.api.win_set_width(active, 40)
+        self.settle()
+        self.editor.input("i")
+        self.settle()
+        self.assertFalse(self.marks(active))
+        self.assertTrue(self.marks(original))
+        self.editor.api.set_current_win(original)
+        self.settle()
+        self.assertTrue(self.editor.eval("mode(1)").startswith("i"))
+        self.assertFalse(self.marks(original))
+        self.assertTrue(self.marks(active))
+
+    def test_insert_native_tracks_newlines_and_joins_without_touching_other_rows(self):
+        line = "First sentence. Second sentence. Last sentence."
+        self.render([line, "", line], display_options={"max_width": 24})
+        self.editor.command("set backspace=indent,eol,start")
+        self.editor.current.window.cursor = (1, 16)
+        self.editor.input("i\r")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], [line[:16], line[16:], "", line])
+        self.assertEqual(self.editor.current.window.cursor, (2, 0))
+        self.assertEqual({mark[1] for mark in self.marks()}, {3})
+        self.editor.input("\x08")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], [line, "", line])
+        self.assertEqual(self.editor.current.window.cursor, (1, 16))
+        self.assertEqual({mark[1] for mark in self.marks()}, {2})
+
+    def test_insert_wrap_preserves_native_fallback_for_unsafe_rows(self):
+        line = "First sentence.\tSecond sentence. Last sentence."
+        self.render([line, "", line.replace("\t", " ")], display_options={
+            "insert_mode": "wrap", "max_width": 24,
+        })
+        before = self.snapshot()
+        self.editor.input("i")
+        self.settle()
+        self.assertEqual({mark[1] for mark in self.marks()}, {2})
+        self.assertTrue(self.option("wrap"))
+        self.assertEqual(before, self.snapshot())
+
+    def test_insert_wrap_keeps_current_row_and_recomputes_real_edits(self):
+        line = "中" * 30
+        self.render([line], display_options={"insert_mode": "wrap", "max_width": 20, "wrap_sentence": True})
+        self.editor.funcs.setreg("a", "unchanged")
+        self.editor.command("set backspace=indent,eol,start")
+        self.editor.current.window.cursor = (1, 30)
+        self.editor.input("i")
+        self.settle()
+        self.assertEqual(self.rows(3), ["中" * 10] * 3)
+        self.assertTrue(self.marks())
+        self.editor.input("新")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], ["中" * 10 + "新" + "中" * 20])
+        self.assertEqual(self.editor.current.window.cursor, (1, 33))
+        self.assertEqual(self.editor.exec_lua("return {vim.fn.screenrow(), vim.fn.screencol()}"), [2, 3])
+        self.assertTrue(self.marks())
+        self.editor.input("\x08")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], [line])
+        self.assertEqual(self.editor.current.window.cursor, (1, 30))
+        self.editor.input("<Del>")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], ["中" * 29])
+        self.editor.input("\r")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], ["中" * 10, "中" * 19])
+        self.assertEqual(self.editor.current.window.cursor, (2, 0))
+        self.assertTrue(self.marks())
+        self.editor.input("\x08")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], ["中" * 29])
+        self.assertEqual(self.editor.current.window.cursor, (1, 30))
+        self.editor.input("\x1bu")
+        self.settle()
+        self.assertEqual(self.editor.current.buffer[:], [line])
+        self.assertEqual(self.editor.funcs.getreg("a"), "unchanged")
+        self.assertEqual(self.editor.exec_lua("return _G.display_messages"), [])
+
+    def test_insert_wrap_preserves_breaks_when_syntax_becomes_visible(self):
+        self.render(["中" * 8 + "**粗**" + "中" * 20], display_options={
+            "insert_mode": "wrap", "max_width": 20, "wrap_sentence": True,
+        })
+        concealed = self.rows(5)
+        columns = [mark[2] for mark in self.marks()]
+        before = self.snapshot()
+        self.assertNotIn("*", "".join(concealed))
+        self.editor.input("i")
+        self.settle()
+        visible = self.rows(5)
+        self.assertIn("*", "".join(visible))
+        self.assertEqual([mark[2] for mark in self.marks()], columns)
+        for _ in range(3):
+            self.editor.exec_lua("_G.render_opts.on.render({buf = vim.api.nvim_get_current_buf()})")
+            self.settle()
+            self.assertEqual([mark[2] for mark in self.marks()], columns)
+        self.assertEqual(before, self.snapshot())
+        self.editor.input("\x1b")
+        self.settle()
+        self.assertEqual(self.rows(5), concealed)
+        self.assertEqual([mark[2] for mark in self.marks()], columns)
+        self.editor.input("i")
+        self.settle()
+        self.editor.command("setlocal conceallevel=0")
+        self.settle()
+        self.assertNotEqual([mark[2] for mark in self.marks()], columns)
+        self.assertNotEqual(self.rows(5), visible)
+        self.editor.command("setlocal conceallevel=3 concealcursor=ni")
+        self.settle()
+        self.assertEqual(self.rows(5), concealed)
+
+    def test_insert_wrap_replans_after_text_geometry_and_config_changes(self):
+        self.render(["中" * 8 + "**粗**" + "中" * 20], display_options={
+            "insert_mode": "wrap", "max_width": 20, "wrap_sentence": True,
+        })
+        original = [mark[2] for mark in self.marks()]
+        self.editor.input("i")
+        self.settle()
+        self.assertEqual([mark[2] for mark in self.marks()], original)
+        self.editor.input("新")
+        self.settle()
+        edited = [mark[2] for mark in self.marks()]
+        self.assertNotEqual(edited, original)
+        self.editor.ui_try_resize(18, 16)
+        self.settle()
+        resized = [mark[2] for mark in self.marks()]
+        self.assertNotEqual(resized, edited)
+        self.editor.exec_lua("require('mdwrap.integrations.render_markdown').extend({}, {insert_mode = 'wrap', max_width = 12})")
+        self.settle()
+        configured = self.marks()
+        self.assertNotEqual([mark[2] for mark in configured], resized)
+        self.editor.command("MdwrapDisplay disable")
+        self.editor.command("MdwrapDisplay enable")
+        self.settle()
+        self.assertEqual([mark[2:] for mark in self.marks()], [mark[2:] for mark in configured])
+        self.assertEqual(self.editor.current.buffer[:], ["新" + "中" * 8 + "**粗**" + "中" * 20])
+        self.assertEqual(self.editor.exec_lua("return _G.display_messages"), [])
+
+    def test_insert_wrap_preserves_breaks_that_previously_needed_no_padding(self):
+        self.render(["中" * 20], width=20, display_options={
+            "insert_mode": "wrap", "wrap_sentence": True,
+        })
+        self.editor.exec_lua("""
+            _G.inline_namespace = vim.api.nvim_create_namespace('inline-test')
+            vim.api.nvim_buf_set_extmark(0, _G.inline_namespace, 0, 0,
+                {virt_text = {{'xx'}}, virt_text_pos = 'inline'})
+            require('mdwrap.display').request_refresh()
+        """)
+        self.settle()
+        self.assertEqual(self.rows(3), ["xx" + "中" * 9, "中" * 10, "中"])
+        self.assertFalse(self.marks())
+        self.editor.input("i")
+        self.editor.exec_lua("""
+            vim.api.nvim_buf_clear_namespace(0, _G.inline_namespace, 0, -1)
+            _G.render_opts.on.render({buf = vim.api.nvim_get_current_buf()})
+        """)
+        self.settle()
+        self.assertEqual(self.rows(3), ["中" * 9, "中" * 10, "中"])
+        self.assertEqual([mark[2] for mark in self.marks()], [27])
+        self.assertEqual(self.editor.current.buffer[:], ["中" * 20])
+
+    def test_insert_wrap_replans_when_preserved_breaks_no_longer_fit(self):
+        self.render(["中" * 8 + "**粗**" + "中" * 20], display_options={
+            "insert_mode": "wrap", "max_width": 20, "wrap_sentence": True,
+        })
+        original = [mark[2] for mark in self.marks()]
+        self.editor.input("i")
+        self.settle()
+        self.assertEqual([mark[2] for mark in self.marks()], original)
+        self.editor.exec_lua("""
+            local namespace = vim.api.nvim_create_namespace('inline-test')
+            vim.api.nvim_buf_set_extmark(0, namespace, 0, 0,
+                {virt_text = {{string.rep('.', 18)}}, virt_text_pos = 'inline'})
+            _G.render_opts.on.render({buf = vim.api.nvim_get_current_buf()})
+        """)
+        self.settle()
+        replanned = [mark[2:] for mark in self.marks()]
+        self.assertTrue(replanned)
+        self.assertNotEqual([mark[0] for mark in replanned], original)
+        self.assertEqual(self.rows(1), ["." * 18 + "中"])
+        self.editor.command("MdwrapDisplay disable")
+        self.editor.command("MdwrapDisplay enable")
+        self.settle()
+        self.assertEqual([mark[2:] for mark in self.marks()], replanned)
+        self.assertEqual(self.editor.exec_lua("return _G.display_messages"), [])
+
+    def test_insert_wrap_recomputes_list_indent_when_prefix_icon_disappears(self):
+        self.render(["- " + "中" * 25], display_options={
+            "insert_mode": "wrap", "max_width": 20, "wrap_sentence": True,
+        })
+        self.editor.exec_lua("""
+            _G.inline_namespace = vim.api.nvim_create_namespace('inline-test')
+            vim.api.nvim_buf_set_extmark(0, _G.inline_namespace, 0, 0,
+                {virt_text = {{'xx'}}, virt_text_pos = 'inline'})
+            require('mdwrap.display').request_refresh()
+        """)
+        self.settle()
+        columns = [mark[2] for mark in self.marks()]
+        self.assertEqual(self.rows(2), ["xx- " + "中" * 8, "    " + "中" * 8])
+        self.editor.input("i")
+        self.editor.exec_lua("""
+            vim.api.nvim_buf_clear_namespace(0, _G.inline_namespace, 0, -1)
+            _G.render_opts.on.render({buf = vim.api.nvim_get_current_buf()})
+        """)
+        self.settle()
+        self.assertEqual([mark[2] for mark in self.marks()], columns)
+        self.assertEqual(self.rows(2), ["- " + "中" * 8, "  " + "中" * 8])
+
+    def test_insert_wrap_inactive_window_keeps_concealed_widths(self):
+        self.render(["中" * 8 + "**粗**" + "中" * 20], width=90, display_options={
+            "insert_mode": "wrap", "max_width": 20, "wrap_sentence": True,
+        })
+        original = self.editor.current.window.handle
+        self.editor.command("vsplit")
+        active = self.editor.current.window.handle
+        self.editor.api.win_set_width(active, 40)
+        self.editor.command("setlocal concealcursor=")
+        self.editor.api.win_set_option(original, "concealcursor", "")
+        self.settle()
+        before = self.rows(5, original)
+        self.editor.input("i")
+        self.settle()
+        self.assertIn("*", "".join(self.rows(5, active)))
+        self.assertNotIn("*", "".join(self.rows(5, original)))
+        self.assertEqual(self.rows(5, original), before)
+        self.assertTrue(self.marks(active))
+        self.assertTrue(self.marks(original))
+
+    def test_insert_policy_can_change_and_reset_without_reconfiguring_renderer(self):
+        self.render(["中" * 30], display_options={"insert_mode": "wrap", "max_width": 20})
+        self.editor.input("i")
+        self.settle()
+        self.assertTrue(self.marks())
+        self.editor.exec_lua("require('mdwrap.integrations.render_markdown').extend(_G.render_opts, {insert_mode = 'native'})")
+        self.settle()
+        self.assertFalse(self.marks())
+        self.assertTrue(self.option("wrap"))
+        self.editor.exec_lua("require('mdwrap.integrations.render_markdown').extend({}, {insert_mode = 'wrap', max_width = 20})")
+        self.settle()
+        self.assertTrue(self.marks())
+        self.editor.exec_lua("require('mdwrap.integrations.render_markdown').extend({})")
+        self.settle()
+        self.assertFalse(self.marks())
+
+    def test_insert_policy_rejects_invalid_values_without_changing_configuration(self):
+        self.render(["中" * 30], display_options={"insert_mode": "wrap", "max_width": 20})
+        self.editor.input("i")
+        self.settle()
+        for policy in (False, True, 0, "", "all", {}):
+            result = self.editor.exec_lua("""
+                local policy = ...
+                local ok, message = pcall(require('mdwrap.integrations.render_markdown').extend, {}, {insert_mode = policy})
+                return {ok, tostring(message)}
+            """, policy)
+            self.assertFalse(result[0], policy)
+            self.assertIn('insert_mode must be "native" or "wrap"', result[1])
+            self.settle()
+            self.assertTrue(self.marks())
+
+    def test_insert_completion_changes_refresh_without_cursor_event(self):
+        self.render(["one two three four five six seven eight nine ten eleven twelve"], display_options={
+            "insert_mode": "wrap", "max_width": 24, "wrap_sentence": True,
+        })
+        self.editor.command("set completeopt=menuone,noinsert,noselect")
+        self.editor.current.window.cursor = (1, 3)
+        self.editor.input("i")
+        self.settle()
+        self.editor.exec_lua("vim.fn.complete(1, {'replacement', 'anotherword'})")
+        self.settle()
+        self.assertEqual(self.editor.funcs.pumvisible(), 1)
+        before = [(mark[1], mark[2]) for mark in self.marks()]
+        self.editor.exec_lua("""
+            vim.api.nvim_clear_autocmds({group = 'MdwrapDisplay', event = 'CursorMovedI'})
+            _G.completion_changes = 0
+            vim.api.nvim_create_autocmd('TextChangedP', {
+                callback = function() _G.completion_changes = _G.completion_changes + 1 end,
+            })
+        """)
+        self.editor.input("<C-n>")
+        self.settle()
+        self.assertTrue(self.editor.eval("mode(1)").startswith("i"))
+        self.assertGreater(self.editor.exec_lua("return _G.completion_changes"), 0)
+        self.assertTrue(self.editor.current.buffer[0].startswith("replacement "))
+        self.assertNotEqual([(mark[1], mark[2]) for mark in self.marks()], before)
+        self.assertTrue(self.option("wrap"))
+
+    def test_transient_renderer_clear_preserves_managed_window_state(self):
+        self.render(["First sentence. Second sentence. Last sentence."])
+        before = self.marks()
+        result = self.editor.exec_lua("""
+            _G.display_option_writes = {}
+            local setter = vim.api.nvim_set_option_value
+            vim.api.nvim_set_option_value = function(name, value, opts)
+                _G.display_option_writes[#_G.display_option_writes + 1] = {name, value}
+                return setter(name, value, opts)
+            end
+            _G.original_clear_called = false
+            local opts = require('mdwrap.integrations.render_markdown').extend({
+                on = {clear = function() _G.original_clear_called = true end},
+            })
+            local context = {buf = vim.api.nvim_get_current_buf(), win = vim.api.nvim_get_current_win()}
+            opts.on.clear(context)
+            local retained = vim.wo.wrap
+            opts.on.render(context)
+            return {_G.original_clear_called, retained}
+        """)
+        self.settle()
+        self.assertEqual(result, [True, True])
+        self.assertEqual(self.editor.exec_lua("return _G.display_option_writes"), [])
+        self.assertEqual(self.marks(), before)
+
+    def test_insert_clear_and_disable_restore_options(self):
+        line = "First sentence. Second sentence. Last sentence."
+        self.render([line, "", line])
+        self.editor.input("i")
+        self.settle()
+        self.assertTrue(self.marks())
+        self.editor.exec_lua("_G.render_opts.on.clear({buf = vim.api.nvim_get_current_buf(), win = vim.api.nvim_get_current_win()})")
+        self.settle()
+        self.assertFalse(self.marks())
+        self.assertFalse(self.option("wrap"))
+        self.editor.exec_lua("_G.render_opts.on.render({buf = vim.api.nvim_get_current_buf(), win = vim.api.nvim_get_current_win()})")
+        self.settle()
+        self.assertTrue(self.marks())
+        self.editor.command("MdwrapDisplay disable")
+        self.assertFalse(self.marks())
+        self.assertFalse(self.option("wrap"))
 
     def test_clear_and_buffer_toggle(self):
         self.render(["First sentence. Second sentence. Last sentence."])
@@ -705,6 +1173,115 @@ class DisplayTests(unittest.TestCase):
         self.assertFalse(self.marks())
         self.assertFalse(self.option("wrap"))
         self.assertEqual(len(self.editor.exec_lua("return _G.display_messages")), 1)
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_real_renderer_visual_modes_preserve_all_paragraph_breaks(self):
+        self.setup_renderer({"max_width": 20, "wrap_sentence": True})
+        line = "First sentence. [Link](https://x). Last sentence."
+        self.source([line, "", line, "", line])
+        self.settle()
+        before = self.snapshot()
+        columns = [(mark[1], mark[2]) for mark in self.marks()]
+        self.assertEqual({row for row, _ in columns}, {0, 2, 4})
+        for key in ("v", "V", "\x16"):
+            with self.subTest(mode=key):
+                self.editor.input(key)
+                self.settle()
+                self.assertTrue(self.option("wrap"))
+                self.assertEqual([(mark[1], mark[2]) for mark in self.marks()], columns)
+                self.assertIn("https", "".join(self.rows(3)))
+                self.editor.input("jj")
+                self.settle()
+                self.assertEqual([(mark[1], mark[2]) for mark in self.marks()], columns)
+                self.assertIn("https", "".join(self.rows(7)[4:7]))
+                self.assertNotIn("https", "".join(self.rows(11)[8:11]))
+                self.assertEqual(before, self.snapshot())
+                self.editor.input("\x1bgg0")
+                self.settle()
+                self.assertNotIn("https", "".join(self.rows(11)))
+        self.assertEqual(self.editor.exec_lua("return _G.display_messages"), [])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_real_renderer_can_still_disable_rendering_in_visual(self):
+        self.setup_renderer({"max_width": 24}, {"render_modes": ["n"]})
+        line = "First sentence. Second sentence. Last sentence."
+        self.source([line, "", line])
+        self.settle()
+        for key in ("v", "V", "\x16"):
+            with self.subTest(mode=key):
+                self.assertTrue(self.marks())
+                self.editor.input(key)
+                self.settle()
+                self.assertFalse(self.marks())
+                self.assertFalse(self.option("wrap"))
+                self.editor.input("\x1b")
+                self.settle()
+                self.assertTrue(self.marks())
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_real_renderer_insert_native_keeps_other_rows_wrapped(self):
+        self.setup_renderer({"max_width": 24})
+        line = "First sentence. [Link](https://x). Last sentence."
+        self.source([line, "", line])
+        self.settle()
+        self.assertEqual({mark[1] for mark in self.marks()}, {0, 2})
+        self.editor.input("iX")
+        self.settle()
+        self.assertEqual({mark[1] for mark in self.marks()}, {2})
+        self.assertTrue(self.option("wrap"))
+        self.assertEqual(self.editor.current.buffer[:], ["X" + line, "", line])
+        self.editor.input("\x1b")
+        self.settle()
+        self.assertEqual({mark[1] for mark in self.marks()}, {0, 2})
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_real_renderer_insert_wrap_tracks_anti_conceal_without_releasing_options(self):
+        self.setup_renderer({"insert_mode": "wrap", "max_width": 20, "wrap_sentence": True})
+        line = "First sentence. [Link](https://x). Last sentence."
+        self.source([line])
+        self.settle()
+        self.assertNotIn("https", "".join(self.rows(6)))
+        rendered = self.marks()
+        self.editor.exec_lua("""
+            _G.wrap_restores = 0
+            local setter = vim.api.nvim_set_option_value
+            vim.api.nvim_set_option_value = function(name, value, opts)
+                if name == 'wrap' and value == false then _G.wrap_restores = _G.wrap_restores + 1 end
+                return setter(name, value, opts)
+            end
+        """)
+        self.editor.input("i")
+        self.settle()
+        self.assertIn("https", "".join(self.rows(6)))
+        self.assertEqual([mark[2] for mark in self.marks()], [mark[2] for mark in rendered])
+        self.assertNotEqual([mark[3]["virt_text"] for mark in self.marks()],
+                            [mark[3]["virt_text"] for mark in rendered])
+        self.assertEqual(self.rows(3), ["First sentence.", "[Link](https://x). Last", "sentence."])
+        for text in ("X", "Y", "Z"):
+            self.editor.input(text)
+            self.settle()
+            self.assertTrue(self.marks())
+            self.assertTrue(self.option("wrap"))
+        self.assertEqual(self.editor.current.buffer[:], ["XYZ" + line])
+        self.assertEqual(self.editor.exec_lua("return _G.wrap_restores"), 0)
+        self.editor.input("\x1b")
+        self.settle()
+        self.assertNotIn("https", "".join(self.rows(6)))
+        self.assertEqual(self.editor.exec_lua("return _G.display_messages"), [])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_real_renderer_can_still_disable_rendering_in_insert(self):
+        self.setup_renderer({"insert_mode": "wrap"}, {"render_modes": ["n"]})
+        self.source(["First sentence. Second sentence. Last sentence."])
+        self.settle()
+        self.assertTrue(self.marks())
+        self.editor.input("i")
+        self.settle()
+        self.assertFalse(self.marks())
+        self.assertFalse(self.option("wrap"))
+        self.editor.input("\x1b")
+        self.settle()
+        self.assertTrue(self.marks())
 
     @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
     def test_real_render_markdown(self):

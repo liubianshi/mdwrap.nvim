@@ -18,6 +18,12 @@ local function supported()
   return vim.fn.has("nvim-0.11") == 1 and type(vim.api.nvim__ns_set) == "function"
 end
 
+local function display_mode()
+  local mode = vim.api.nvim_get_mode().mode
+  if mode == "v" or mode == "V" or mode == "\22" then return "v" end
+  return mode == "n" and "n" or mode:sub(1, 1) == "i" and "i" or nil
+end
+
 local function release(window)
   local state = windows[window]
   if not state then return end
@@ -58,7 +64,7 @@ local function acquire(window, buffer)
     local namespace = vim.api.nvim_create_namespace("mdwrap.display." .. window)
     conceal.ignore_namespace(namespace)
     vim.api.nvim__ns_set(namespace, { wins = { window } })
-    state = { buf = buffer, ns = namespace, saved = {}, cache = {} }
+    state = { buf = buffer, ns = namespace, saved = {}, cache = {}, plans = {} }
     windows[window] = state
   end
   changing = true
@@ -113,37 +119,47 @@ local function blank_gap(source, first, last, cached)
   return source:sub(cursor + 1, last):match("^ *$") ~= nil
 end
 
-local function padding_marks(source, row, cached, plan, width, marks)
-  local result = {}
-  local start, indentation = 0, 0
+local function plan_breaks(source, cached, plan)
+  local endings = {}
   for index, current in ipairs(plan) do
     local following = plan[index + 1]
     local ending = following and cached.offset + cached.atoms[following.first].sc or #source
     local column = cached.offset + cached.atoms[current.last].ec
     if not blank_gap(source, column, ending, cached) then return nil end
+    endings[#endings + 1] = ending
+  end
+  return endings
+end
+
+local function padding_marks(source, row, rest_width, endings, width, marks)
+  local result = {}
+  local start, indentation = 0, 0
+  for index, ending in ipairs(endings) do
     local occupied = native_width(source, start, ending, marks) + indentation
     if occupied > width then return nil end
-    local padding = width - occupied + cached.rest_width
-    if following and padding > 0 then
+    local padding = width - occupied + rest_width
+    if index < #endings and padding > 0 then
       result[#result + 1] = { row, ending, {
         virt_text = { { string.rep(" ", padding) } }, virt_text_pos = "inline", priority = 0,
         right_gravity = false,
       } }
     end
-    start, indentation = ending, cached.rest_width
+    start, indentation = ending, rest_width
   end
   return result
 end
 
-local function row_plan(window, state, row, prefix, rest_prefix, width)
+local function row_plan(window, state, row, prefix, rest_prefix, width, mode, cursor_range)
+  local previous = state.plans[row]
+  state.plans[row] = nil
   if (vim.wo[window].number or vim.wo[window].relativenumber)
       and vim.o.cpoptions:find("n", 1, true) then return {} end
   local source = vim.api.nvim_buf_get_lines(state.buf, row, row + 1, false)[1]
   if not source or source:find("\t", 1, true) or source:find("\226\128\139", 1, true) then return {} end
   local level = vim.wo[window].conceallevel
   if level ~= 0 and level ~= 3 then return {} end
-  local concealed = level == 3 and (vim.api.nvim_win_get_cursor(window)[1] - 1 ~= row
-    or vim.wo[window].concealcursor:find("n", 1, true) ~= nil)
+  local concealed = level == 3 and (not cursor_range or row < cursor_range[1] or row > cursor_range[2]
+    or vim.wo[window].concealcursor:find(mode, 1, true) ~= nil)
   local marks, unsafe = conceal.gather(state.buf, row, row, nil, {
     conceal = concealed, conceallevel = level, overlap = true, win = window,
   })
@@ -187,23 +203,44 @@ local function row_plan(window, state, row, prefix, rest_prefix, width)
     wrap_sentence = wrap_sentence, cjk_break_at_punct_only = options.cjk_break_at_punct_only,
     bracket_as_unit = options.bracket_as_unit,
   }
+  local plan_key = vim.json.encode({
+    source, prefix, rest_prefix, width, plan_width, level, vim.o.ambiwidth,
+    wrap_sentence, options.cjk_break_at_punct_only, options.bracket_as_unit,
+  })
+  local preserve = mode == "v" or (mode == "i" and display_options.insert_mode == "wrap")
+  if preserve and previous and previous.key == plan_key then
+    local result = padding_marks(source, row, cached.rest_width, previous.endings, width, marks)
+    if result then state.plans[row] = previous; return result end
+  end
   local plan = layout.plan(cached.atoms, settings)
   if not plan then return {} end
-  local result = padding_marks(source, row, cached, plan, width, marks)
-  if result then return result end
-  if not cached.native_atoms then
-    cached.native_atoms = vim.deepcopy(cached.atoms)
-    for _, item in ipairs(cached.native_atoms) do
-      item.width = native_width(source, cached.offset + item.sc, cached.offset + item.ec, marks)
+  local endings = plan_breaks(source, cached, plan)
+  local result = endings and padding_marks(source, row, cached.rest_width, endings, width, marks)
+  if not result then
+    if not cached.native_atoms then
+      cached.native_atoms = vim.deepcopy(cached.atoms)
+      for _, item in ipairs(cached.native_atoms) do
+        item.width = native_width(source, cached.offset + item.sc, cached.offset + item.ec, marks)
+      end
     end
+    settings.prefix_first_width = cached.native_prefix_width
+    plan = layout.plan(cached.native_atoms, settings)
+    endings = plan and plan_breaks(source, cached, plan)
+    result = endings and padding_marks(source, row, cached.rest_width, endings, width, marks)
   end
-  settings.prefix_first_width = cached.native_prefix_width
-  plan = layout.plan(cached.native_atoms, settings)
-  return plan and padding_marks(source, row, cached, plan, width, marks) or {}
+  if result then state.plans[row] = { key = plan_key, endings = endings } end
+  return result or {}
 end
 
-local function refresh_window(window, buffer)
+local function refresh_window(window, buffer, mode, active_window)
   local state = acquire(window, buffer)
+  local cursor_row = window == active_window and vim.api.nvim_win_get_cursor(window)[1] - 1 or nil
+  local cursor_range = cursor_row and { cursor_row, cursor_row } or nil
+  if mode == "v" and buffer == vim.api.nvim_win_get_buf(active_window) then
+    local active_row = vim.api.nvim_win_get_cursor(active_window)[1] - 1
+    local anchor = vim.fn.getpos("v")[2] - 1
+    cursor_range = { math.min(anchor, active_row), math.max(anchor, active_row) }
+  end
   local info = vim.fn.getwininfo(window)[1]
   local width = vim.api.nvim_win_get_width(window) - info.textoff
   state.width = width
@@ -215,17 +252,20 @@ local function refresh_window(window, buffer)
   if not parsed[buffer] or parsed[buffer].tick ~= tick then
     parsed[buffer] = { tick = tick, blocks = blocks.split(buffer) }
   end
-  local next_marks, next_cache = {}, {}
+  local next_marks, next_cache, next_plans = {}, {}, {}
   for _, block in ipairs(parsed[buffer].blocks) do
     if block.action == "wrap" and block.erow >= view[1] and block.srow <= view[2] then
       for row = math.max(block.srow, view[1]), math.min(block.erow, view[2]) do
-        local prefix = block.content_prefix[row - block.srow + 1] or ""
-        vim.list_extend(next_marks, row_plan(window, state, row, prefix, block.prefix_rest, width))
-        next_cache[row] = state.cache[row]
+        if mode ~= "i" or display_options.insert_mode == "wrap" or row ~= cursor_row then
+          local prefix = block.content_prefix[row - block.srow + 1] or ""
+          vim.list_extend(next_marks, row_plan(window, state, row, prefix, block.prefix_rest, width, mode, cursor_range))
+          next_cache[row] = state.cache[row]
+          next_plans[row] = state.plans[row]
+        end
       end
     end
   end
-  state.cache = next_cache
+  state.cache, state.plans = next_cache, next_plans
   if tick ~= vim.api.nvim_buf_get_changedtick(buffer) then M.request_refresh(); return end
   if state.tick == tick and vim.deep_equal(state.marks, next_marks) then return end
   vim.api.nvim_buf_clear_namespace(buffer, state.ns, 0, -1)
@@ -237,14 +277,16 @@ end
 
 function M.refresh()
   pending = false
+  local mode = display_mode()
+  local active_window = vim.api.nvim_get_current_win()
   local visible = {}
   for _, window in ipairs(vim.api.nvim_list_wins()) do
     visible[window] = true
     local buffer = vim.api.nvim_win_get_buf(window)
     local state = buffers[buffer]
     if state and state.enabled and state.rendered and not state.failed
-        and vim.api.nvim_get_mode().mode == "n" and not vim.wo[window].diff then
-      local ok, message = pcall(refresh_window, window, buffer)
+        and mode and not vim.wo[window].diff then
+      local ok, message = pcall(refresh_window, window, buffer, mode, active_window)
       changing = false
       if not ok then fail(buffer, message) end
     else
@@ -273,6 +315,9 @@ function M.configure(opts)
     assert(type(max_width) == "number" and max_width >= 1 and max_width % 1 == 0,
       "[mdwrap display] max_width must be a positive integer")
   end
+  local insert_mode = opts and opts.insert_mode
+  assert(insert_mode == nil or insert_mode == "native" or insert_mode == "wrap",
+    '[mdwrap display] insert_mode must be "native" or "wrap"')
   display_options = vim.deepcopy(opts or {})
   if configured then
     M.request_refresh()
@@ -317,7 +362,7 @@ function M.configure(opts)
     end,
   })
   vim.api.nvim_create_autocmd({
-    "BufWinEnter", "WinResized", "VimResized", "WinScrolled", "TextChanged", "TextChangedI",
+    "BufWinEnter", "WinEnter", "WinResized", "VimResized", "WinScrolled", "TextChanged", "TextChangedI", "TextChangedP",
     "CursorMoved", "CursorMovedI", "ModeChanged", "OptionSet",
   }, {
     group = group,
@@ -331,7 +376,7 @@ function M.configure(opts)
         end
         for _, state in pairs(windows) do state.cache = {} end
       end
-      if vim.api.nvim_get_mode().mode ~= "n" then
+      if not display_mode() then
         local targets = vim.tbl_keys(windows)
         for _, window in ipairs(targets) do release(window) end
       end
@@ -370,7 +415,7 @@ function M.clear(context)
   local state = buffers[context.buf]
   if not state then return end
   state.rendered = false
-  release_buffer(context.buf)
+  M.request_refresh()
 end
 
 function M.command(action)
