@@ -111,7 +111,7 @@ use({ "liubianshi/mdwrap.nvim", config = function() require("mdwrap").setup({}) 
 需要 **Neovim ≥ 0.11**，且提供实验性 API `nvim__ns_set`，用于隔离各窗口的显示标记。
 缺少 API 时会警告并跳过集成，原有硬折行仍支持 Neovim ≥ 0.10。
 同一缓冲区在不同宽度的窗口中会独立折行，宽度取窗口的实际正文区，扣除行号、符号栏和折叠栏，
-可用显示专用的 `max_width` 限制上限。
+再扣除右侧留白，可用显示专用的 `max_width` 限制上限。
 它不读取硬折行的 `width`、`textwidth` 或默认 80。
 
 在 lazy.nvim 的 render-markdown.nvim 配置中包装原有 `opts`：
@@ -126,6 +126,7 @@ use({ "liubianshi/mdwrap.nvim", config = function() require("mdwrap").setup({}) 
     return require("mdwrap.integrations.render_markdown").extend(opts, {
       wrap_sentence = true,
       max_width = 120,
+      right_margin = "auto",
       insert_mode = "native",
     })
   end,
@@ -139,6 +140,7 @@ use({ "liubianshi/mdwrap.nvim", config = function() require("mdwrap").setup({}) 
 require("render-markdown").setup(require("mdwrap.integrations.render_markdown").extend(opts, {
   wrap_sentence = true,
   max_width = 120,
+  right_margin = "auto",
   insert_mode = "native",
 }))
 ```
@@ -147,18 +149,27 @@ require("render-markdown").setup(require("mdwrap.integrations.render_markdown").
 它不改变 `mdwrap.setup()` 的硬折行配置；不指定时继承原有 `wrap_sentence` 值。
 英文单词、中文禁则和括号整体约束仍有效，末行及已有物理换行附近可能较短，不保证每行等长。
 `max_width` 是正整数，单位为显示列，包含列表或引用的前缀缩进；120 列约容纳 60 个汉字。
-断点按 `min(窗口正文宽度, max_width)` 规划：宽窗口不继续拉长，窄窗口仍随窗口收缩。
+断点按 `min(窗口正文宽度 - 右侧留白, max_width)` 规划：宽窗口不继续拉长，窄窗口仍随窗口收缩。
 不指定 `max_width` 时不设上限；它不改变窗口大小、全局选项或源文件。
+
+`right_margin` 默认值为 `"auto"`，省略时也使用自动留白。
+它按各窗口 `getwininfo().textoff` 的实际宽度，匹配左侧行号、符号栏、折叠栏及自定义状态栏的占用列数，
+包括栏内空白，但不包括列表或引用自身的缩进。
+也可指定非负整数作为固定留白列数；`0` 恢复不额外预留右侧空白的行为。
+例如窗口宽 20 列、左侧栏占 4 列时，自动留白再扣除右侧 4 列，正文按 12 列规划。
+左侧栏变化时自动刷新；正文保持左对齐，`max_width` 可能使右侧空白更多。
+扣除留白后不足一列时退回原生软折行，空间恢复后重新规划。
 
 `insert_mode` 控制插入模式中编辑行的折行方式，默认值为 `"native"`。
 此时只有活动窗口正在编辑的物理源行撤去 mdwrap 断点，退回按窗口宽度进行原生软折行；
 该源行的所有屏幕续行都受影响，但其他源行和其他窗口仍保持 mdwrap 折行。
-编辑行临时不受 `max_width` 限制，移动到另一源行或退出插入模式后自动恢复。
+编辑行临时不受 `max_width` 和 `right_margin` 限制，移动到另一源行或退出插入模式后自动恢复。
 
 设为 `insert_mode = "wrap"`，编辑行也会持续使用 mdwrap 折行，随输入重新计算断点。
 文本和窗口正文宽度不变时，进入插入模式沿用原有源文本断点；
 语法标记显露或渲染图标消失时，只调整虚拟填充和续行缩进，不因显隐重新选择断点。
 为保持断点，显露的语法可能使屏幕行暂时超过 `max_width`，但不会超过窗口正文宽度。
+此时也可能临时侵入 `right_margin` 预留的空白。
 输入、删除、调整窗口或折行配置时，按当前实际显示宽度重新规划；原断点放不下时也会重新规划。
 因此实际编辑仍可能改变断点和屏幕光标位置，但虚拟填充空格不会写入源文件。
 下述安全回退在这两种策略下仍有效。
@@ -168,7 +179,7 @@ require("render-markdown").setup(require("mdwrap.integrations.render_markdown").
 选区扩展、缩小时，按 `concealcursor` 的 `v` 设置及上游 `anti_conceal` 调整语法显隐。
 文本、正文宽度及折行配置不变时，优先沿用原断点，只调整填充和续行缩进。
 与 `"wrap"` 插入策略相同，显露的语法可能使行暂时超过 `max_width`；
-原断点超出窗口正文宽度时重新规划。
+也可能侵入右侧留白，原断点超出窗口正文宽度时重新规划。
 
 插入和可视模式中都需要 render-markdown 本身仍启用渲染：
 可设置 `render_modes = true`，或在原有 `render_modes` 列表中加入所需模式。
@@ -196,7 +207,7 @@ Neovim 原生软折会把被 conceal 隐藏的源字符计入折行列数。
 集成会先按渲染宽度规划，再校验原生列数，必要时重新选择断点，避免隐藏标记把续行挤偏。
 超过窗口宽的隐藏 URL、超长不可分原子、Tab、零宽空格、跨行 conceal、重复到续行的 inline 虚拟文本，
 以及无法精确度量的 conceal 状态，会使该源行回退到原生软折行，不强行保证句末或禁则。
-这些回退行及保留块也不保证遵守 `max_width`。
+这些回退行及保留块也不保证遵守 `max_width` 或保留 `right_margin`。
 目前精确规划支持 `conceallevel=0` 或 `3`，`1`、`2` 回退原生折行。
 启用行号且设置 `cpoptions+=n` 时，原生续行会借用行号栏，集成也会回退原生折行。
 解析或窗口 API 出错时会清理该缓冲区的显示状态并警告；修复原因后可用 `:MdwrapDisplay enable` 重试。

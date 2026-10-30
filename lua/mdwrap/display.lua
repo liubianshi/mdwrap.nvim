@@ -149,7 +149,7 @@ local function padding_marks(source, row, rest_width, endings, width, marks)
   return result
 end
 
-local function row_plan(window, state, row, prefix, rest_prefix, width, mode, cursor_range)
+local function row_plan(window, state, row, prefix, rest_prefix, width, plan_width, mode, cursor_range)
   local previous = state.plans[row]
   state.plans[row] = nil
   if (vim.wo[window].number or vim.wo[window].relativenumber)
@@ -193,7 +193,6 @@ local function row_plan(window, state, row, prefix, rest_prefix, width, mode, cu
     cached.native_prefix_width = native_width(source, 0, offset + leading_end, marks)
     state.cache[row] = cached
   end
-  local plan_width = math.min(width, display_options.max_width or width)
   if cached.first_width >= plan_width or cached.rest_width >= plan_width then return {} end
   local options = require("mdwrap").options
   local wrap_sentence = display_options.wrap_sentence
@@ -243,8 +242,15 @@ local function refresh_window(window, buffer, mode, active_window)
   end
   local info = vim.fn.getwininfo(window)[1]
   local width = vim.api.nvim_win_get_width(window) - info.textoff
-  state.width = width
-  if width < 1 then return end
+  state.width, state.textoff = width, info.textoff
+  local margin = display_options.right_margin
+  if margin == nil or margin == "auto" then margin = info.textoff end
+  local plan_width = math.min(width - margin, display_options.max_width or width)
+  if plan_width < 1 then
+    vim.api.nvim_buf_clear_namespace(buffer, state.ns, 0, -1)
+    state.cache, state.plans, state.marks, state.tick = {}, {}, {}, nil
+    return
+  end
   local view = vim.api.nvim_win_call(window, function()
     return { vim.fn.line("w0") - 1, vim.fn.line("w$") - 1 }
   end)
@@ -258,7 +264,8 @@ local function refresh_window(window, buffer, mode, active_window)
       for row = math.max(block.srow, view[1]), math.min(block.erow, view[2]) do
         if mode ~= "i" or display_options.insert_mode == "wrap" or row ~= cursor_row then
           local prefix = block.content_prefix[row - block.srow + 1] or ""
-          vim.list_extend(next_marks, row_plan(window, state, row, prefix, block.prefix_rest, width, mode, cursor_range))
+          vim.list_extend(next_marks,
+            row_plan(window, state, row, prefix, block.prefix_rest, width, plan_width, mode, cursor_range))
           next_cache[row] = state.cache[row]
           next_plans[row] = state.plans[row]
         end
@@ -315,6 +322,10 @@ function M.configure(opts)
     assert(type(max_width) == "number" and max_width >= 1 and max_width % 1 == 0,
       "[mdwrap display] max_width must be a positive integer")
   end
+  local right_margin = opts and opts.right_margin
+  assert(right_margin == nil or right_margin == "auto"
+    or (type(right_margin) == "number" and right_margin >= 0 and right_margin % 1 == 0),
+    '[mdwrap display] right_margin must be "auto" or a non-negative integer')
   local insert_mode = opts and opts.insert_mode
   assert(insert_mode == nil or insert_mode == "native" or insert_mode == "wrap",
     '[mdwrap display] insert_mode must be "native" or "wrap"')
@@ -329,7 +340,8 @@ function M.configure(opts)
       local state = windows[window]
       if state then
         local info = vim.fn.getwininfo(window)[1]
-        if info and state.width ~= vim.api.nvim_win_get_width(window) - info.textoff then
+        if info and (state.width ~= vim.api.nvim_win_get_width(window) - info.textoff
+            or state.textoff ~= info.textoff) then
           M.request_refresh()
         end
       end

@@ -188,6 +188,108 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(self.rows(3), ["这是第一句。这是第二", "句。这是第三句。这是", "第四句。"])
         self.assertEqual(before, self.snapshot())
 
+    def test_right_margin_defaults_to_left_columns(self):
+        self.editor.command('setlocal number numberwidth=4')
+        self.render(['中' * 30], width=20, display_options={'wrap_sentence': True})
+        before = self.snapshot()
+        self.assertEqual(self.rows(5), ['  1 ' + '中' * 6] + ['    ' + '中' * 6] * 4)
+        self.assertEqual(before, self.snapshot())
+
+    def test_right_margin_explicit_auto_tracks_custom_statuscolumn(self):
+        self.editor.command('setlocal number numberwidth=4')
+        self.editor.exec_lua("vim.wo.statuscolumn = '  %l  '")
+        self.render(['中' * 30], width=24, display_options={'right_margin': 'auto', 'wrap_sentence': True})
+        offset = self.editor.exec_lua('return vim.fn.getwininfo(vim.api.nvim_get_current_win())[1].textoff')
+        self.assertEqual(offset, 5)
+        self.assertEqual([row[offset:] for row in self.rows(4)], ['中' * 7] * 4)
+
+    def test_right_margin_fixed_zero_and_reconfiguration(self):
+        self.editor.command('setlocal number numberwidth=4')
+        self.render(['中' * 30], width=20, display_options={'right_margin': 2, 'wrap_sentence': True})
+        self.assertEqual([row[4:] for row in self.rows(4)], ['中' * 7] * 4)
+        self.editor.exec_lua("require('mdwrap.integrations.render_markdown').extend(_G.render_opts, {right_margin = 0, wrap_sentence = true})")
+        self.settle()
+        self.assertEqual([row[4:] for row in self.rows(4)], ['中' * 8] * 3 + ['中' * 6])
+        self.editor.exec_lua("require('mdwrap.integrations.render_markdown').extend(_G.render_opts, {wrap_sentence = true})")
+        self.settle()
+        self.assertEqual([row[4:] for row in self.rows(5)], ['中' * 6] * 5)
+
+    def test_right_margin_with_max_width_and_list_indent(self):
+        self.render(['- ' + '中' * 18], width=40, display_options={
+            'right_margin': 10, 'max_width': 20, 'wrap_sentence': True,
+        })
+        self.assertEqual(self.rows(2), ['- ' + '中' * 9, '  ' + '中' * 9])
+        self.editor.ui_try_resize(28, 16)
+        self.settle()
+        self.assertEqual(self.rows(3), ['- ' + '中' * 8, '  ' + '中' * 8, '  ' + '中' * 2])
+
+    def test_right_margin_exhaustion_clears_old_marks_and_recovers(self):
+        self.render(['中' * 30], width=32, display_options={'right_margin': 16, 'wrap_sentence': True})
+        self.assertTrue(self.marks())
+        self.editor.ui_try_resize(16, 16)
+        self.settle()
+        self.assertFalse(self.marks())
+        self.editor.ui_try_resize(32, 16)
+        self.settle()
+        self.assertEqual(self.rows(4), ['中' * 8] * 3 + ['中' * 6])
+
+    def test_right_margin_rejects_invalid_values_without_replacing_options(self):
+        self.render(['中' * 30], width=20, display_options={'right_margin': 8, 'wrap_sentence': True})
+        for value in (-1, 1.5, True, False, '8', 'invalid'):
+            result = self.editor.exec_lua("""
+                local ok, message = pcall(require('mdwrap.integrations.render_markdown').extend, {}, {right_margin = ...})
+                return {ok, tostring(message)}
+            """, value)
+            self.assertFalse(result[0], value)
+            self.assertIn('right_margin must be "auto" or a non-negative integer', result[1])
+        self.assertTrue(self.editor.exec_lua("""
+            for _, value in ipairs({math.huge, -math.huge, 0/0}) do
+                if pcall(require('mdwrap.display').configure, {right_margin = value}) then return false end
+            end
+            require('mdwrap.display').refresh()
+            return true
+        """))
+        self.settle()
+        self.assertEqual(self.rows(5), ['中' * 6] * 5)
+
+    def test_right_margin_is_independent_per_window(self):
+        self.render(['中' * 50], width=80, display_options={'wrap_sentence': True})
+        original = self.editor.current.window.handle
+        self.editor.command('vsplit')
+        active = self.editor.current.window.handle
+        self.editor.api.win_set_width(active, 30)
+        self.editor.command('setlocal number numberwidth=4')
+        self.settle()
+        self.assertEqual(self.rows(2, active), ['  1 ' + '中' * 11, '    ' + '中' * 11])
+        width = self.editor.api.win_get_width(original)
+        self.assertEqual(self.rows(1, original), ['中' * (width // 2)])
+
+    def test_right_margin_redraw_tracks_left_columns_with_unchanged_text_width(self):
+        self.render(['中' * 30], width=24, display_options={'wrap_sentence': True})
+        self.assertEqual(self.rows(2), ['中' * 12] * 2)
+        self.editor.command('set eventignore=all')
+        try:
+            self.editor.ui_try_resize(28, 16)
+            self.editor.command('setlocal number numberwidth=4')
+            self.settle()
+            self.settle()
+            self.assertEqual([row[4:] for row in self.rows(3)], ['中' * 10] * 3)
+        finally:
+            self.editor.command('set eventignore=')
+
+    def test_right_margin_preserves_insert_and_visual_breaks(self):
+        self.editor.command('setlocal number numberwidth=4')
+        self.render(['中' * 30], width=24, display_options={'insert_mode': 'wrap', 'wrap_sentence': True})
+        before = [(mark[1], mark[2]) for mark in self.marks()]
+        for mode in ('i', 'v', 'V', '\x16'):
+            with self.subTest(mode=mode):
+                self.editor.input(mode)
+                self.settle()
+                self.assertEqual([(mark[1], mark[2]) for mark in self.marks()], before)
+                self.assertEqual([row[4:] for row in self.rows(3)], ['中' * 8] * 3)
+                self.editor.input('\x1bgg0')
+                self.settle()
+
     def test_display_max_width_caps_wide_windows(self):
         self.render(["中" * 30], width=40, display_options={"max_width": 20, "wrap_sentence": True})
         before = self.snapshot()
@@ -209,7 +311,7 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(self.rows(3), ["中" * 60] * 2 + ["中" * 30])
 
     def test_display_max_width_respects_number_column_in_narrow_window(self):
-        self.render(["中" * 30], width=20, display_options={"max_width": 20, "wrap_sentence": True})
+        self.render(["中" * 30], width=20, display_options={"max_width": 20, "wrap_sentence": True, "right_margin": 0})
         self.editor.command("setlocal number numberwidth=4")
         self.settle()
         self.assertEqual(self.rows(4), ["  1 " + "中" * 8] + ["    " + "中" * 8] * 2 + ["    " + "中" * 6])
@@ -374,7 +476,7 @@ class DisplayTests(unittest.TestCase):
         """)
         self.settle()
         self.settle()
-        self.assertEqual(self.rows(2), ["! First sentence.", "  Second sentence. Last sentence."])
+        self.assertEqual(self.rows(3), ["! First sentence.", "  Second sentence.", "  Last sentence."])
         self.editor.exec_lua("""
             vim.defer_fn(function()
                 vim.api.nvim_buf_clear_namespace(0, _G.sign_namespace, 0, -1)
