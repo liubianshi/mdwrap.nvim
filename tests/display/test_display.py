@@ -1386,6 +1386,69 @@ class DisplayTests(unittest.TestCase):
         self.assertTrue(self.marks())
 
     @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_unrepresentable_concealed_link_preserves_line_start_punctuation(self) -> None:
+        self.setup_renderer({"max_width": 80, "wrap_sentence": True})
+        prefix = "我需要将 改写成一篇学术论文，准备投稿至亚太经济，下面是它的"
+        continuation = "另外，你也用 schola 找一些期刊的学术论文了解它的体例。"
+        link = "[投稿须知](https://ytjj.cbpt.cnki.net/EditorGN/PromptPageInfo.aspx?t=v&c=1)"
+        for separator in (", ", "，"):
+            with self.subTest(separator=separator):
+                self.source([prefix + link + separator + continuation])
+                self.settle()
+                before = self.snapshot()
+                for width in (100, 120):
+                    with self.subTest(width=width):
+                        self.editor.ui_try_resize(width, 16)
+                        self.settle()
+                        expected = [prefix + "\U000f059f 投稿须知" + separator.strip(), continuation]
+                        self.assertEqual(self.rows(2), expected)
+                        self.assertTrue(self.marks())
+                        self.assertEqual(self.snapshot(), before)
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_unrepresentable_concealed_link_uses_native_wrap_when_safe(self) -> None:
+        self.setup_renderer({"max_width": 80, "wrap_sentence": True})
+        prefix = "我需要将 改写成一篇学术论文，准备投稿至亚太经济，下面是它的"
+        suffix = "另外，你也用 schola 找一些期刊的学术论文了解它的体例。"
+        link = "[投稿须知](https://ytjj.cbpt.cnki.net/EditorGN/PromptPageInfo.aspx?t=v&c=1)"
+        self.source([prefix + link + suffix])
+        self.settle()
+        before = self.snapshot()
+        for width in (100, 120):
+            with self.subTest(width=width):
+                self.editor.ui_try_resize(width, 16)
+                self.settle()
+                self.assertEqual(self.rows(2), [prefix + "\U000f059f 投稿须知", suffix])
+                self.assertEqual(self.marks(), [])
+                self.assertEqual(self.snapshot(), before)
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_hard_wrapping_concealed_link_uses_label_and_renderer_icon(self):
+        self.setup_renderer()
+        for url in ("https://example.com/x", "https://example.com/" + "x" * 160):
+            with self.subTest(url=url):
+                link = f"[文档]({url})"
+                source = ["甲甲" + link + "乙乙丙丙丁丁。"]
+                expected = ["甲甲" + link + "乙", "乙丙丙丁丁。"]
+                self.source(source)
+                self.settle()
+                # 12 columns: 甲甲 (4) + renderer icon (2) + 文档 (4) + 乙 (2).
+                # Both entry points must ignore the hidden URL, preserve its bytes,
+                # and include the renderer's extra width even for a very long URL.
+                output = self.editor.exec_lua("""
+                    return require('mdwrap').format_lines(vim.api.nvim_buf_get_lines(0, 0, -1, false), {
+                        bufnr = vim.api.nvim_get_current_buf(), width = 12, wrap_sentence = true,
+                    })
+                """)
+                self.assertEqual(output, expected)
+                self.assertEqual(self.editor.current.buffer[:], source)
+                self.editor.exec_lua("require('mdwrap').format_buffer(0, {width = 12, wrap_sentence = true})")
+                self.assertEqual(self.editor.current.buffer[:], expected)
+                self.settle()
+                self.editor.exec_lua("require('mdwrap').format_buffer(0, {width = 12, wrap_sentence = true})")
+                self.assertEqual(self.editor.current.buffer[:], expected)
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
     def test_real_render_markdown(self):
         self.editor.exec_lua("vim.opt.runtimepath:append(...)", str(RENDER))
         self.editor.exec_lua("""

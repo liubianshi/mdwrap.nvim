@@ -1,5 +1,6 @@
 local atoms = require("mdwrap.atoms")
 local blocks = require("mdwrap.blocks")
+local chardata = require("mdwrap.chardata")
 local conceal = require("mdwrap.conceal")
 local layout = require("mdwrap.layout")
 
@@ -149,6 +150,20 @@ local function padding_marks(source, row, rest_width, endings, width, marks)
   return result
 end
 
+local function link_punctuation_marks(source, row, cached, link, following)
+  local label_close = link.text:find("](", 1, true) or link.text:find("][", 1, true)
+  if not label_close then return nil end
+  local punctuation = vim.fn.strcharpart(following.text, 0, 1)
+  if punctuation == "" then return nil end
+  local overlay_column = cached.offset + link.sc + label_close - 1
+  local start = cached.offset + following.sc
+  local spaces = source:sub(start + #punctuation + 1):match("^ *") or ""
+  return {
+    { row, start, { end_col = start + #punctuation + #spaces, conceal = "" } },
+    { row, overlay_column, { virt_text = { { punctuation } }, virt_text_pos = "overlay", priority = 0 } },
+  }
+end
+
 local function row_plan(window, state, row, prefix, rest_prefix, width, plan_width, mode, cursor_range)
   local previous = state.plans[row]
   state.plans[row] = nil
@@ -216,6 +231,7 @@ local function row_plan(window, state, row, prefix, rest_prefix, width, plan_wid
   local endings = plan_breaks(source, cached, plan)
   local result = endings and padding_marks(source, row, cached.rest_width, endings, width, marks)
   if not result then
+    local visual_plan = plan
     if not cached.native_atoms then
       cached.native_atoms = vim.deepcopy(cached.atoms)
       for _, item in ipairs(cached.native_atoms) do
@@ -224,6 +240,29 @@ local function row_plan(window, state, row, prefix, rest_prefix, width, plan_wid
     end
     settings.prefix_first_width = cached.native_prefix_width
     plan = layout.plan(cached.native_atoms, settings)
+    -- Do not split an attached link from its preceding text merely because the
+    -- hidden destination occupies native columns. Keep following punctuation
+    -- at the link's visible end instead of at the native continuation's start.
+    local visual_index = 1
+    for _, current in ipairs(plan or {}) do
+      local first = current.first
+      local visual = visual_plan[visual_index]
+      while visual and visual.first < first do
+        visual_index = visual_index + 1
+        visual = visual_plan[visual_index]
+      end
+      local item, previous_atom = cached.atoms[first], cached.atoms[first - 1]
+      local following = cached.atoms[first + 1]
+      local forbidden = following and (following.class == "punct_no_break_before"
+        or chardata.half_break_before[following.text:sub(1, 1)])
+      if (not visual or visual.first ~= first) and item.atomic_kind == "link"
+          and previous_atom and (previous_atom.class == "cjk" or previous_atom.class == "word")
+          and cached.native_atoms[first].width > item.width then
+        if not forbidden then return {} end
+        local punctuation_marks = link_punctuation_marks(source, row, cached, item, following)
+        if punctuation_marks then return punctuation_marks end
+      end
+    end
     endings = plan and plan_breaks(source, cached, plan)
     result = endings and padding_marks(source, row, cached.rest_width, endings, width, marks)
   end
