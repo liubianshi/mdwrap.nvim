@@ -88,6 +88,7 @@
 ---@class mdwrap.SourceAtom: mdwrap.Atom
 ---@field sc integer
 ---@field ec integer
+---@field label_end? integer  链接 link_text 的结束字节（0-indexed，不含）；autolink 无此字段
 
 ---@class mdwrap.PlannedLine
 ---@field first integer

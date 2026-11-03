@@ -1423,6 +1423,91 @@ class DisplayTests(unittest.TestCase):
                 self.assertEqual(self.snapshot(), before)
 
     @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_unrepresentable_link_moves_whole_punctuation_run(self) -> None:
+        self.setup_renderer({"max_width": 80, "wrap_sentence": True})
+        link = "[说明](https://example.com/" + "x" * 45 + ")"
+        source = "甲" * 15 + link + "」。后文"
+        self.editor.ui_try_resize(80, 16)
+        self.source([source])
+        self.settle()
+        self.assertEqual(self.rows(2), [
+            "甲" * 15 + "\U000f059f 说明」。",
+            "后文",
+        ])
+        self.assertEqual(self.editor.current.buffer[:], [source])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_unrepresentable_link_after_punctuation_keeps_visual_break(self) -> None:
+        self.setup_renderer({"max_width": 80, "wrap_sentence": True})
+        prefix = "我需要将 改写成一篇学术论文，准备投稿至亚太经济，下面是它的，"
+        continuation = "另外，你也用 schola 找一些期刊的学术论文了解它的体例。"
+        link = "[投稿须知](https://ytjj.cbpt.cnki.net/EditorGN/PromptPageInfo.aspx?t=v&c=1)"
+        source = prefix + link + "，" + continuation
+        self.editor.ui_try_resize(100, 16)
+        self.source([source])
+        self.settle()
+        self.assertEqual(self.rows(2), [
+            prefix + "\U000f059f 投稿须知，",
+            continuation,
+        ])
+        self.assertEqual(self.editor.current.buffer[:], [source])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_unrepresentable_links_on_one_row_each_move_punctuation(self) -> None:
+        self.setup_renderer({"max_width": 80, "wrap_sentence": True})
+        link = "[说明](https://example.com/" + "x" * 45 + ")"
+        source = "甲" * 15 + link + "，" + "乙" * 5 + link + "，后文"
+        self.editor.ui_try_resize(80, 16)
+        self.source([source])
+        self.settle()
+        self.assertEqual(self.rows(3), [
+            "甲" * 15 + "\U000f059f 说明，",
+            "乙" * 5 + "\U000f059f 说明，",
+            "后文",
+        ])
+        marks = self.marks()
+        self.assertEqual(sum(mark[3].get("conceal") == "" for mark in marks), 2)
+        self.assertEqual(sum(mark[3].get("virt_text_pos") == "overlay" for mark in marks), 2)
+        self.assertEqual(self.editor.current.buffer[:], [source])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_unrepresentable_autolink_and_wiki_link_move_punctuation(self) -> None:
+        self.setup_renderer({"max_width": 80, "wrap_sentence": True})
+        cases = [
+            (
+                100,
+                "甲" * 8 + "<https://example.com/" + "x" * 40 + ">，后文",
+                ["甲" * 8 + "\U000f059f https://example.com/" + "x" * 40 + "，", "后文"],
+            ),
+            (
+                100,
+                "甲" * 10 + "[[" + "x" * 30 + "|显示]]，后文",
+                ["甲" * 10 + "\U000f15d6 显示，后文"],
+            ),
+        ]
+        for width, source, expected in cases:
+            with self.subTest(width=width):
+                self.editor.ui_try_resize(width, 16)
+                self.source([source])
+                self.settle()
+                self.assertEqual(self.rows(len(expected)), expected)
+                self.assertEqual(self.editor.current.buffer[:], [source])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_unrepresentable_link_label_delimiter_text_is_not_an_endpoint(self) -> None:
+        self.setup_renderer({"max_width": 80, "wrap_sentence": True})
+        link = "[a `](` b](https://example.com/" + "x" * 30 + ")"
+        source = "甲" * 10 + link + "，后文"
+        self.editor.ui_try_resize(80, 16)
+        self.source([source])
+        self.settle()
+        self.assertEqual(self.rows(2), [
+            "甲" * 10 + "\U000f059f a ]( b，",
+            "后文",
+        ])
+        self.assertEqual(self.editor.current.buffer[:], [source])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
     def test_hard_wrapping_concealed_link_uses_label_and_renderer_icon(self):
         self.setup_renderer()
         for url in ("https://example.com/x", "https://example.com/" + "x" * 160):

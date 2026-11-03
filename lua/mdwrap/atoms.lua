@@ -76,7 +76,15 @@ local function collect_atomic(node, spans)
     if child:named() then
       if ATOMIC_TYPES[child:type()] then
         local _, sc, _, ec = child:range()
-        spans[#spans + 1] = { sc = sc, ec = ec, ty = child:type() }
+        local label_end
+        for part in child:iter_children() do
+          if part:type() == "link_text" then
+            local _, _, _, ending = part:range()
+            label_end = ending
+            break
+          end
+        end
+        spans[#spans + 1] = { sc = sc, ec = ec, ty = child:type(), label_end = label_end }
       else
         collect_atomic(child, spans) -- 递归找嵌套 atomic（如 **`code`**）
       end
@@ -158,7 +166,7 @@ end
 
 ---@param str string 单逻辑行（无换行）
 ---@param opts mdwrap.AtomizeOpts?
----@return table<integer, {sc:integer, ec:integer, ty:string}>
+---@return table<integer, {sc:integer, ec:integer, ty:string, label_end?:integer}>
 ---@return {sc:integer, ec:integer}[]
 ---@return {at:integer, w:integer}[]
 local function parse_spans(str, opts)
@@ -353,6 +361,7 @@ function M.atomize_mapped(str, opts)
         result[#result + 1] = {
           text = text, width = 0, class = class, atomic_kind = kind,
           sc = #result == 0 and 0 or offset, ec = offset + size,
+          label_end = span and span.label_end or nil,
         }
       end
     end
