@@ -1,5 +1,6 @@
 local atoms = require("mdwrap.atoms")
 local blocks = require("mdwrap.blocks")
+local chardata = require("mdwrap.chardata")
 local conceal = require("mdwrap.conceal")
 local layout = require("mdwrap.layout")
 
@@ -149,6 +150,44 @@ local function padding_marks(source, row, rest_width, endings, width, marks)
   return result
 end
 
+local function forbidden_prefix(item)
+  if item.class == "punct_no_break_before" then return item.text end
+  local length = 0
+  while length < #item.text and chardata.half_break_before[item.text:sub(length + 1, length + 1)] do
+    length = length + 1
+  end
+  return item.text:sub(1, length)
+end
+
+local function link_punctuation_marks(source, row, cached, link, following, width, marks)
+  local punctuation, start, ending = "", nil, 0
+  for index = following, #cached.atoms do
+    local item = cached.atoms[index]
+    local prefix = forbidden_prefix(item)
+    if prefix == "" then break end
+    -- A concealed closing bracket (notably a wiki link's outer bracket) is
+    -- part of the source run, but must not reappear in the overlay.
+    if item.width > 0 then punctuation = punctuation .. prefix end
+    start = start or cached.offset + item.sc
+    ending = cached.offset + item.sc + #prefix
+    if #prefix < #item.text then break end
+  end
+  if not start or punctuation == "" then return nil end
+  local overlay_column = cached.offset + (link.label_end or link.ec - 1)
+  -- A layout break does not guarantee a native screen-row break. Keep the
+  -- source punctuation when its following text could occupy the overlay.
+  if native_width(source, 0, start, marks) < width then return nil end
+  -- Only the first native row has a provably free destination. On later rows,
+  -- reserve cells with inline text so punctuation cannot overwrite visible text.
+  local position = native_width(source, 0, overlay_column, marks)
+    + vim.fn.strdisplaywidth(punctuation) <= width and "overlay" or "inline"
+  local spaces = source:sub(ending + 1):match("^ *") or ""
+  return {
+    { row, start, { end_col = ending + #spaces, conceal = "" } },
+    { row, overlay_column, { virt_text = { { punctuation } }, virt_text_pos = position, priority = 0 } },
+  }
+end
+
 local function row_plan(window, state, row, prefix, rest_prefix, width, plan_width, mode, cursor_range)
   local previous = state.plans[row]
   state.plans[row] = nil
@@ -216,6 +255,7 @@ local function row_plan(window, state, row, prefix, rest_prefix, width, plan_wid
   local endings = plan_breaks(source, cached, plan)
   local result = endings and padding_marks(source, row, cached.rest_width, endings, width, marks)
   if not result then
+    local visual_plan = plan
     if not cached.native_atoms then
       cached.native_atoms = vim.deepcopy(cached.atoms)
       for _, item in ipairs(cached.native_atoms) do
@@ -224,6 +264,28 @@ local function row_plan(window, state, row, prefix, rest_prefix, width, plan_wid
     end
     settings.prefix_first_width = cached.native_prefix_width
     plan = layout.plan(cached.native_atoms, settings)
+    -- Do not split an attached link from its preceding text merely because the
+    -- hidden destination occupies native columns. Keep following punctuation
+    -- at the link's visible end instead of at the native continuation's start.
+    local visual_index = 1
+    local punctuation_marks = {}
+    for _, current in ipairs(plan or {}) do
+      local first = current.first
+      local visual = visual_plan[visual_index]
+      while visual and visual.first < first do
+        visual_index = visual_index + 1
+        visual = visual_plan[visual_index]
+      end
+      local item, previous_atom = cached.atoms[first], cached.atoms[first - 1]
+      if (not visual or visual.first ~= first) and item.atomic_kind == "link"
+          and previous_atom and previous_atom.class ~= "space"
+          and cached.native_atoms[first].width > item.width then
+        local marks_for_link = link_punctuation_marks(source, row, cached, item, first + 1, width, marks)
+        if not marks_for_link then return {} end
+        vim.list_extend(punctuation_marks, marks_for_link)
+      end
+    end
+    if #punctuation_marks > 0 then return punctuation_marks end
     endings = plan and plan_breaks(source, cached, plan)
     result = endings and padding_marks(source, row, cached.rest_width, endings, width, marks)
   end

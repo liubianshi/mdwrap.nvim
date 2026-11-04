@@ -205,6 +205,8 @@ require("render-markdown").setup(require("mdwrap.integrations.render_markdown").
 
 Neovim 原生软折会把被 conceal 隐藏的源字符计入折行列数。
 集成会先按渲染宽度规划，再校验原生列数，必要时重新选择断点，避免隐藏标记把续行挤偏。
+若按源码列数重选会把紧贴正文的隐藏链接额外推到下一行，该源行直接退回原生软折行。
+链接后紧跟的逗号等禁前断标点会覆盖显示在链接末尾，不落到下一行行首。
 超过窗口宽的隐藏 URL、超长不可分原子、Tab、零宽空格、跨行 conceal、重复到续行的 inline 虚拟文本，
 以及无法精确度量的 conceal 状态，会使该源行回退到原生软折行，不强行保证句末或禁则。
 这些回退行及保留块也不保证遵守 `max_width` 或保留 `right_margin`。
