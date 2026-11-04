@@ -159,7 +159,7 @@ local function forbidden_prefix(item)
   return item.text:sub(1, length)
 end
 
-local function link_punctuation_marks(source, row, cached, link, following)
+local function link_punctuation_marks(source, row, cached, link, following, width, marks)
   local punctuation, start, ending = "", nil, 0
   for index = following, #cached.atoms do
     local item = cached.atoms[index]
@@ -174,10 +174,17 @@ local function link_punctuation_marks(source, row, cached, link, following)
   end
   if not start or punctuation == "" then return nil end
   local overlay_column = cached.offset + (link.label_end or link.ec - 1)
+  -- A layout break does not guarantee a native screen-row break. Keep the
+  -- source punctuation when its following text could occupy the overlay.
+  if native_width(source, 0, start, marks) < width then return nil end
+  -- Only the first native row has a provably free destination. On later rows,
+  -- reserve cells with inline text so punctuation cannot overwrite visible text.
+  local position = native_width(source, 0, overlay_column, marks)
+    + vim.fn.strdisplaywidth(punctuation) <= width and "overlay" or "inline"
   local spaces = source:sub(ending + 1):match("^ *") or ""
   return {
     { row, start, { end_col = ending + #spaces, conceal = "" } },
-    { row, overlay_column, { virt_text = { { punctuation } }, virt_text_pos = "overlay", priority = 0 } },
+    { row, overlay_column, { virt_text = { { punctuation } }, virt_text_pos = position, priority = 0 } },
   }
 end
 
@@ -273,7 +280,7 @@ local function row_plan(window, state, row, prefix, rest_prefix, width, plan_wid
       if (not visual or visual.first ~= first) and item.atomic_kind == "link"
           and previous_atom and previous_atom.class ~= "space"
           and cached.native_atoms[first].width > item.width then
-        local marks_for_link = link_punctuation_marks(source, row, cached, item, first + 1)
+        local marks_for_link = link_punctuation_marks(source, row, cached, item, first + 1, width, marks)
         if not marks_for_link then return {} end
         vim.list_extend(punctuation_marks, marks_for_link)
       end

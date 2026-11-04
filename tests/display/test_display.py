@@ -1406,6 +1406,26 @@ class DisplayTests(unittest.TestCase):
                         self.assertEqual(self.snapshot(), before)
 
     @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_concealed_link_punctuation_preserves_following_text_on_resize(self) -> None:
+        self.setup_renderer({"max_width": 32, "wrap_sentence": True})
+        for separator in ("，", ", "):
+            with self.subTest(separator=separator):
+                self.source(["正文正文正文[文档](https://example.com)" + separator + "后文"])
+                self.settle()
+                before = self.snapshot()
+                for width in (40, 41, 43, 45, 50, 32, 45):
+                    with self.subTest(width=width):
+                        self.editor.ui_try_resize(width, 16)
+                        self.settle()
+                        visible = "".join(row for row in self.rows(6) if row != "~")
+                        self.assertEqual(visible.replace(" ", ""),
+                                         "正文正文正文\U000f059f文档" + separator.strip() + "后文")
+                        if width == 45:
+                            self.assertEqual(self.rows(2),
+                                             ["正文正文正文\U000f059f 文档" + separator + "后", "文"])
+                        self.assertEqual(self.snapshot(), before)
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
     def test_unrepresentable_concealed_link_uses_native_wrap_when_safe(self) -> None:
         self.setup_renderer({"max_width": 80, "wrap_sentence": True})
         prefix = "我需要将 改写成一篇学术论文，准备投稿至亚太经济，下面是它的"
@@ -1467,7 +1487,20 @@ class DisplayTests(unittest.TestCase):
         ])
         marks = self.marks()
         self.assertEqual(sum(mark[3].get("conceal") == "" for mark in marks), 2)
-        self.assertEqual(sum(mark[3].get("virt_text_pos") == "overlay" for mark in marks), 2)
+        self.assertEqual(sum("virt_text" in mark[3] for mark in marks), 2)
+        self.assertEqual(self.editor.current.buffer[:], [source])
+
+    @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
+    def test_later_link_punctuation_preserves_text_on_the_same_native_row(self) -> None:
+        self.setup_renderer({"max_width": 60, "wrap_sentence": True})
+        link = "[说明](https://example.com/" + "x" * 27 + ")"
+        source = "甲" * 15 + link + "，" + "乙" * 5 + link + "，后文"
+        self.editor.ui_try_resize(80, 16)
+        self.source([source])
+        self.settle()
+        visible = "".join(row for row in self.rows(6) if row != "~")
+        self.assertEqual(visible.replace(" ", ""),
+                         "甲" * 15 + "\U000f059f说明，" + "乙" * 5 + "\U000f059f说明，后文")
         self.assertEqual(self.editor.current.buffer[:], [source])
 
     @unittest.skipUnless(RENDER.is_dir(), "render-markdown checkout unavailable")
